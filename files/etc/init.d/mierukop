@@ -19,8 +19,11 @@ log() { logger -t mierukop "$1"; }
 uci_get() { uci -q get "$CONF.settings.$1"; }
 
 setup_nft() {
-	local set_name="$1" mark="$2"
-	# Own table + set; mark TCP/UDP destined to set members
+	local set_name="$1" mark="$2" tun
+	tun=$(uci_get tun_name)
+	# Own table: mark traffic to set members (prerouting = forwarded LAN clients,
+	# output = router-local), plus forward-accept + masquerade for the tun so that
+	# forwarded client traffic is allowed out mtun0 (fw4 would otherwise drop it).
 	nft -f - <<EOF
 table $NFT_TABLE {
 	set $NFT_SET {
@@ -35,6 +38,15 @@ table $NFT_TABLE {
 	chain output {
 		type route hook output priority mangle; policy accept;
 		ip daddr @$NFT_SET meta mark set $mark
+	}
+	chain forward {
+		type filter hook forward priority -1; policy accept;
+		oifname "$tun" accept
+		iifname "$tun" accept
+	}
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "$tun" masquerade
 	}
 }
 EOF
