@@ -30,14 +30,14 @@ nftables set  ──fwmark──►  ip rule ──►  table ──►  tun (mt
 ## Install (one‑liner)
 
 ```sh
-sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/mierukop/main/install.sh)
+sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main/install.sh)
 ```
 
 If GitHub is blocked on the router, serve the files from your own host and:
 
 ```sh
 MIERUKOP_MIRROR="https://router.koleso.app/mierukop" \
-  sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/mierukop/main/install.sh)
+  sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main/install.sh)
 ```
 
 ## Configure & start

@@ -1,7 +1,7 @@
 #!/bin/sh
 # mierukop installer — one-liner for OpenWrt
 #
-#   sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/mierukop/main/install.sh)
+#   sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main/install.sh)
 #   # or, if github is blocked on the box, via your mirror:
 #   MIERUKOP_MIRROR="https://router.koleso.app/mierukop" sh <(wget -qO- .../install.sh)
 #
@@ -9,7 +9,7 @@
 # then sets up policy routing of selected traffic through the mieru tunnel.
 
 set -e
-REPO="${MIERUKOP_REPO:-https://raw.githubusercontent.com/Nikolay4ru/mierukop/main}"
+REPO="${MIERUKOP_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main}"
 MIRROR="${MIERUKOP_MIRROR:-}"          # optional fallback base (e.g. https://router.koleso.app/mierukop)
 MIERU_VER="${MIERU_VER:-3.18.0}"
 HEV_VER="${HEV_VER:-2.7.5}"
