@@ -69,13 +69,18 @@ write_mieru_conf() {
     "user": { "name": "$user", "password": "$pass" },
     "servers": [{
       "ipAddress": "$server",
-      "portBindings": [{ "port": $port, "protocol": "$proto" }]
+      "portBindings": [
+        { "port": $port, "protocol": "TCP" },
+        { "port": $port, "protocol": "UDP" }
+      ]
     }],
-    "mtu": 1400
+    "mtu": 1400,
+    "multiplexing": { "level": "MULTIPLEXING_MIDDLE" }
   }],
   "activeProfile": "mierukop",
   "rpcPort": 8965,
   "socks5Port": $socks,
+  "socks5ListenLAN": false,
   "loggingLevel": "INFO"
 }
 EOF
@@ -102,6 +107,13 @@ EOF
 
 setup_dnsmasq() {
 	# Route configured domains through the tunnel: dnsmasq adds resolved IPs to the nft set.
+	# SAFETY: the `nftset=` directive requires dnsmasq-full. On plain dnsmasq it would
+	# crash the resolver (DNS down for the whole LAN), so we skip it unless supported.
+	rm -f "$DNSMASQ_CONF"
+	if ! dnsmasq --help 2>&1 | grep -q -- '--nftset'; then
+		log "dnsmasq has no nftset support (install dnsmasq-full) — domain routing disabled, subnets still work"
+		return 0
+	fi
 	mkdir -p /tmp/dnsmasq.d
 	: > "$DNSMASQ_CONF"
 	config_load "$CONF"
