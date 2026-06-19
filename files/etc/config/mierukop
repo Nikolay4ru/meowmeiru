@@ -34,12 +34,10 @@ config list_source 'discord'
 	option type 'subnet'
 	option url 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/discord.lst'
 
-# Extra domains routed through the tunnel (resolved IPs auto-added to the set via dnsmasq)
-config domains 'user'
+# User policy: extra domains (resolved IPs auto-added via dnsmasq) + static subnets
+# routed through the tunnel. One section named 'user' holding both list types.
+config policy 'user'
 	list domain 'telegram.org'
 	list domain 'telegra.ph'
 	list domain 't.me'
-
-# Extra static subnets always routed through the tunnel
-config subnets 'user'
 	# list subnet '149.154.160.0/20'
