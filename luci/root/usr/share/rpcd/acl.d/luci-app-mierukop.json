@@ -1,0 +1,17 @@
+{
+	"luci-app-mierukop": {
+		"description": "Grant access to mierukop configuration",
+		"read": {
+			"uci": [ "mierukop" ],
+			"file": {
+				"/usr/bin/mierukop": [ "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "mierukop" ],
+			"file": {
+				"/usr/bin/mierukop": [ "exec" ]
+			}
+		}
+	}
+}

@@ -1,0 +1,165 @@
+#!/bin/sh /etc/rc.common
+# mierukop — policy routing over a mieru SOCKS5 transport (podkop-style, for mieru)
+# Routes selected subnets/domains through mieru via tun2socks (hev-socks5-tunnel) + nftables fwmark.
+
+START=90
+STOP=10
+USE_PROCD=1
+
+CONF="mierukop"
+NFT_TABLE="inet mierukop"
+NFT_SET="mierukop_subnets"
+RUN_DIR="/var/run/mierukop"
+MIERU_CONF="$RUN_DIR/mieru.json"
+HEV_CONF="$RUN_DIR/hev.yml"
+DNSMASQ_CONF="/tmp/dnsmasq.d/mierukop.conf"
+
+log() { logger -t mierukop "$1"; }
+
+uci_get() { uci -q get "$CONF.settings.$1"; }
+
+setup_nft() {
+	local set_name="$1" mark="$2"
+	# Own table + set; mark TCP/UDP destined to set members
+	nft -f - <<EOF
+table $NFT_TABLE {
+	set $NFT_SET {
+		type ipv4_addr
+		flags interval
+		auto-merge
+	}
+	chain prerouting {
+		type filter hook prerouting priority mangle; policy accept;
+		ip daddr @$NFT_SET meta mark set $mark
+	}
+	chain output {
+		type route hook output priority mangle; policy accept;
+		ip daddr @$NFT_SET meta mark set $mark
+	}
+}
+EOF
+}
+
+teardown_nft() {
+	nft delete table $NFT_TABLE 2>/dev/null
+}
+
+setup_route() {
+	local mark="$1" table="$2" tun="$3"
+	ip route replace default dev "$tun" table "$table" 2>/dev/null
+	ip rule del fwmark "$mark" lookup "$table" 2>/dev/null
+	ip rule add fwmark "$mark" lookup "$table" 2>/dev/null
+}
+
+teardown_route() {
+	local mark="$1" table="$2"
+	ip rule del fwmark "$mark" lookup "$table" 2>/dev/null
+	ip route flush table "$table" 2>/dev/null
+}
+
+write_mieru_conf() {
+	local server port proto user pass socks
+	server=$(uci_get server); port=$(uci_get port); proto=$(uci_get protocol)
+	user=$(uci_get username); pass=$(uci_get password); socks=$(uci_get socks_port)
+	mkdir -p "$RUN_DIR"
+	cat > "$MIERU_CONF" <<EOF
+{
+  "profiles": [{
+    "profileName": "mierukop",
+    "user": { "name": "$user", "password": "$pass" },
+    "servers": [{
+      "ipAddress": "$server",
+      "portBindings": [{ "port": $port, "protocol": "$proto" }]
+    }],
+    "mtu": 1400
+  }],
+  "activeProfile": "mierukop",
+  "rpcPort": 8965,
+  "socks5Port": $socks,
+  "loggingLevel": "INFO"
+}
+EOF
+}
+
+write_hev_conf() {
+	local tun addr socks
+	tun=$(uci_get tun_name); addr=$(uci_get tun_addr); socks=$(uci_get socks_port)
+	mkdir -p "$RUN_DIR"
+	cat > "$HEV_CONF" <<EOF
+tunnel:
+  name: $tun
+  mtu: 1400
+  ipv4: $addr
+socks5:
+  address: 127.0.0.1
+  port: $socks
+  udp: 'udp'
+misc:
+  task-stack-size: 20480
+  log-level: warn
+EOF
+}
+
+setup_dnsmasq() {
+	# Route configured domains through the tunnel: dnsmasq adds resolved IPs to the nft set.
+	mkdir -p /tmp/dnsmasq.d
+	: > "$DNSMASQ_CONF"
+	config_load "$CONF"
+	config_list_foreach user domain _emit_domain
+	[ -s "$DNSMASQ_CONF" ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1
+}
+_emit_domain() {
+	# nftset syntax for OpenWrt fw4 (nftables): add resolved IPs to our set
+	echo "nftset=/$1/4#${NFT_TABLE##* }#${NFT_TABLE%% *}#${NFT_SET}" >> "$DNSMASQ_CONF"
+}
+
+start_service() {
+	[ "$(uci_get enabled)" = "1" ] || { log "disabled in config"; return 0; }
+	local mark table tun
+	mark=$(uci_get fwmark); table=$(uci_get route_table); tun=$(uci_get tun_name)
+
+	write_mieru_conf
+	write_hev_conf
+	setup_nft "$NFT_SET" "$mark"
+	setup_dnsmasq
+
+	# 1) mieru client (socks5 transport)
+	procd_open_instance mieru
+	procd_set_param command /usr/bin/mieru -c "$MIERU_CONF" run
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	# 2) tun2socks (hev-socks5-tunnel) → forwards tun to mieru socks5
+	procd_open_instance tun2socks
+	procd_set_param command /usr/bin/hev-socks5-tunnel "$HEV_CONF"
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+
+	# routing + lists applied after services come up
+	( sleep 5
+	  setup_route "$mark" "$table" "$tun"
+	  /etc/mierukop/update-lists.sh apply
+	  log "started: routing selected traffic via mieru ($tun, mark $mark)"
+	) &
+}
+
+stop_service() {
+	local mark table
+	mark=$(uci_get fwmark); table=$(uci_get route_table)
+	teardown_route "$mark" "$table"
+	teardown_nft
+	rm -f "$DNSMASQ_CONF"
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	log "stopped"
+}
+
+reload_service() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$CONF"
+}

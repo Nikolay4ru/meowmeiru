@@ -1,0 +1,45 @@
+config mierukop 'settings'
+	option enabled '1'
+	# mieru server endpoint
+	option server '0.0.0.0'
+	option port '30443'
+	option protocol 'TCP'
+	option username 'CHANGE_ME'
+	option password 'CHANGE_ME'
+	# transport: tcp | udp
+	option transport 'TCP'
+	# local socks5 that mieru exposes
+	option socks_port '1180'
+	# tun device + routing table/mark
+	option tun_name 'mtun0'
+	option tun_addr '198.18.0.1'
+	option fwmark '0x1042'
+	option route_table '1042'
+	# how often to refresh subnet/domain lists (hours)
+	option update_interval '24'
+
+# Community subnet/domain lists pulled from itdoginfo/allow-domains (downloaded THROUGH the tunnel)
+config list_source 'telegram'
+	option enabled '1'
+	option type 'subnet'
+	option url 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/telegram.lst'
+
+config list_source 'meta'
+	option enabled '0'
+	option type 'subnet'
+	option url 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/meta.lst'
+
+config list_source 'discord'
+	option enabled '0'
+	option type 'subnet'
+	option url 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/discord.lst'
+
+# Extra domains routed through the tunnel (resolved IPs auto-added to the set via dnsmasq)
+config domains 'user'
+	list domain 'telegram.org'
+	list domain 'telegra.ph'
+	list domain 't.me'
+
+# Extra static subnets always routed through the tunnel
+config subnets 'user'
+	# list subnet '149.154.160.0/20'

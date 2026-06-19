@@ -1,0 +1,63 @@
+#!/bin/sh
+# mierukop CLI — manage the mieru policy-routing module
+CONF="mierukop"
+NFT_TABLE="inet mierukop"
+NFT_SET="mierukop_subnets"
+SOCKS_PORT="$(uci -q get $CONF.settings.socks_port || echo 1180)"
+
+usage() {
+	cat <<EOF
+mierukop — policy routing over mieru (podkop-style)
+
+Usage: mierukop <command>
+  start | stop | restart     manage the service
+  status                     show service + tunnel health
+  test                       check tunnel exit IP + a proxied domain
+  update                     re-download subnet lists (via the tunnel)
+  set-server <ip> <port> <user> <pass>   configure mieru endpoint
+  add-domain <domain>        route a domain through the tunnel
+  add-subnet <cidr>          route a subnet through the tunnel
+  count                      how many subnets are loaded
+EOF
+}
+
+case "$1" in
+	start|stop|restart) /etc/init.d/mierukop "$1" ;;
+	status)
+		echo "service: $(/etc/init.d/mierukop running >/dev/null 2>&1 && echo running || echo stopped)"
+		echo "mieru:   $(pgrep -f '/usr/bin/mieru' >/dev/null && echo up || echo down)"
+		echo "tun2socks: $(pgrep -f hev-socks5-tunnel >/dev/null && echo up || echo down)"
+		echo "tun dev: $(ip -br addr show $(uci -q get $CONF.settings.tun_name) 2>/dev/null || echo absent)"
+		echo "subnets: $(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l)"
+		;;
+	test)
+		echo -n "tunnel exit IP: "
+		curl -fs --max-time 12 --proxy "socks5h://127.0.0.1:${SOCKS_PORT}" https://api.ipify.org 2>/dev/null || echo "FAIL"
+		echo
+		echo -n "telegram via tunnel: "
+		curl -fs --max-time 12 --proxy "socks5h://127.0.0.1:${SOCKS_PORT}" -o /dev/null -w "HTTP %{http_code}\n" https://core.telegram.org/ 2>/dev/null || echo "FAIL"
+		;;
+	update) /etc/mierukop/update-lists.sh download ;;
+	count) nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' | wc -l ;;
+	set-server)
+		[ $# -eq 5 ] || { echo "usage: mierukop set-server <ip> <port> <user> <pass>"; exit 1; }
+		uci set $CONF.settings.server="$2"
+		uci set $CONF.settings.port="$3"
+		uci set $CONF.settings.username="$4"
+		uci set $CONF.settings.password="$5"
+		uci commit $CONF
+		echo "saved; run: mierukop restart"
+		;;
+	add-domain)
+		[ -n "$2" ] || { echo "usage: mierukop add-domain <domain>"; exit 1; }
+		uci add_list $CONF.user.domain="$2"; uci commit $CONF
+		echo "added domain $2; run: mierukop restart"
+		;;
+	add-subnet)
+		[ -n "$2" ] || { echo "usage: mierukop add-subnet <cidr>"; exit 1; }
+		uci add_list $CONF.user.subnet="$2"; uci commit $CONF
+		nft add element $NFT_TABLE $NFT_SET "{ $2 }" 2>/dev/null
+		echo "added subnet $2"
+		;;
+	*) usage ;;
+esac

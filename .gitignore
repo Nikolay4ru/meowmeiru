@@ -1,0 +1,3 @@
+*.tmp
+*.bak
+files/etc/mierukop/lists/*.lst

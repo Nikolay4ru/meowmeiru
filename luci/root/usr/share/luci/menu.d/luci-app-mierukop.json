@@ -1,0 +1,14 @@
+{
+	"admin/services/mierukop": {
+		"title": "mierukop",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "mierukop/main"
+		},
+		"depends": {
+			"acl": [ "luci-app-mierukop" ],
+			"uci": { "mierukop": true }
+		}
+	}
+}
