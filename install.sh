@@ -47,7 +47,10 @@ if opkg list-installed 2>/dev/null | grep -q '^dnsmasq '; then
 		opkg install dnsmasq-full >/dev/null 2>&1 || true
 	}
 fi
-opkg install kmod-tun nftables curl ca-bundle >/dev/null 2>&1 || true
+# ip-full (iproute2) is REQUIRED — busybox `ip` cannot do `ip rule` / routing tables / tuntap
+opkg install kmod-tun nftables curl ca-bundle ip-full >/dev/null 2>&1 || true
+command -v ip >/dev/null && ip rule list >/dev/null 2>&1 || \
+	say "WARNING: 'ip rule' unavailable — ensure ip-full (iproute2) is installed, busybox ip won't work"
 
 # ── binaries: mieru + hev-socks5-tunnel ──
 get_bin() { # get_bin <name> <primary-url> <dest>
