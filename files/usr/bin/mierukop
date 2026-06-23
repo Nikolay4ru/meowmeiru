@@ -67,10 +67,10 @@ case "$1" in
 	ping)
 		sv=$(active_server); host=$(srv_get "$sv" address)
 		echo -n "server_rtt_ms: "
-		ping -c 3 -W 2 "$host" 2>/dev/null | awk -F'= ' '/=/{split($2,a,"/"); printf "%.1f\n", a[2]; f=1} END{if(!f)print "n/a"}'
+		ping -c 3 -W 2 "$host" 2>/dev/null | awk -F'= ' '/min\/avg\/max/{split($2,a,"/"); printf "%.1f\n", a[2]; f=1} END{if(!f)print "n/a"}'
 		echo -n "tunnel_rtt_ms: "
-		t=$(curl -fs --proxy "$PROXY" --max-time 10 -o /dev/null -w '%{time_connect}' https://www.google.com/generate_204 2>/dev/null)
-		[ -n "$t" ] && awk "BEGIN{printf \"%.0f\n\", $t*1000}" || echo "n/a"
+		t=$(curl -fs --proxy "$PROXY" --max-time 10 -o /dev/null -w '%{time_starttransfer}' https://www.google.com/generate_204 2>/dev/null)
+		[ -n "$t" ] && [ "$t" != "0.000000" ] && awk "BEGIN{printf \"%.0f\n\", $t*1000}" || echo "n/a"
 		;;
 	speedtest)
 		res=$(curl -fs --proxy "$PROXY" --max-time 15 -o /dev/null \

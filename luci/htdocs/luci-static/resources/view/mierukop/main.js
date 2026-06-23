@@ -141,12 +141,13 @@ return view.extend({
     };
     var last=b[n-1]||{rx:0,tx:0};
     this._chartNow.innerHTML = 'DOWN <b>'+fmtRate(last.rx)+'</b> &nbsp; UP <b>'+fmtRate(last.tx)+'</b>';
+    // NB: CSS var() only resolves in `style=`, not in SVG presentation attributes.
     var svg=''
       + '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
-      + '<line x1="0" y1="'+(H/2)+'" x2="'+W+'" y2="'+(H/2)+'" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 4"/>'
-      + '<path d="'+path('rx',true)+'" fill="var(--fg)" opacity="0.10"/>'
-      + '<path d="'+path('rx',false)+'" fill="none" stroke="var(--fg)" stroke-width="2" stroke-linejoin="round"/>'
-      + '<path d="'+path('tx',false)+'" fill="none" stroke="var(--fg2)" stroke-width="1.5" stroke-dasharray="2 3" stroke-linejoin="round"/>'
+      + '<line x1="0" y1="'+(H/2)+'" x2="'+W+'" y2="'+(H/2)+'" style="stroke:var(--line)" stroke-width="1" stroke-dasharray="3 4"/>'
+      + '<path d="'+path('rx',true)+'" style="fill:var(--fg);opacity:.10"/>'
+      + '<path d="'+path('rx',false)+'" style="fill:none;stroke:var(--fg)" stroke-width="2" stroke-linejoin="round"/>'
+      + '<path d="'+path('tx',false)+'" style="fill:none;stroke:var(--fg2)" stroke-width="1.5" stroke-dasharray="2 3" stroke-linejoin="round"/>'
       + '</svg>';
     this._chartSvg.innerHTML = svg;
   },
