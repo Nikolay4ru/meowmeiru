@@ -17,22 +17,22 @@ config mierukop 'settings'
 	option route_table '1042'
 	# how often to refresh subnet/domain lists (hours)
 	option update_interval '24'
+	# real DNS used to resolve routed domains (reached THROUGH the tunnel)
+	option routed_dns '8.8.8.8'
+	# community lists from itdoginfo/allow-domains (space-separated). Run:
+	#   mierukop lists          — show all available
+	#   mierukop list add NAME  — enable one
+	# subnet+domain: telegram meta twitter discord roblox
+	# subnet only:   cloudflare hetzner digitalocean
+	# domain only:   youtube tiktok google_ai google_play hdrezka
+	#                russia_outside anime news porn geoblock block
+	option community_lists 'telegram youtube discord meta twitter'
 
-# Community subnet/domain lists pulled from itdoginfo/allow-domains (downloaded THROUGH the tunnel)
-config list_source 'telegram'
-	option enabled '1'
-	option type 'subnet'
-	option url 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/telegram.lst'
-
-config list_source 'meta'
-	option enabled '0'
-	option type 'subnet'
-	option url 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/meta.lst'
-
-config list_source 'discord'
-	option enabled '0'
-	option type 'subnet'
-	option url 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Subnets/IPv4/discord.lst'
+# Optional custom subnet-list URLs (arbitrary). type must be 'subnet'.
+#config list_source 'mycustom'
+#	option enabled '1'
+#	option type 'subnet'
+#	option url 'https://example.com/my-subnets.lst'
 
 # User policy: extra domains (resolved IPs auto-added via dnsmasq) + static subnets
 # routed through the tunnel. One section named 'user' holding both list types.

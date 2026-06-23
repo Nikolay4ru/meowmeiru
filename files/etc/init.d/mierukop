@@ -162,7 +162,7 @@ start_service() {
 	write_mieru_conf
 	write_hev_conf
 	setup_nft "$NFT_SET" "$mark"
-	setup_dnsmasq
+	# domain dnsmasq drop-in (community + user domains) is built by update-lists.sh apply below
 
 	# mieru stores its config in its own state dir; apply BEFORE running.
 	HOME=/root /usr/bin/mieru apply config "$MIERU_CONF" >/dev/null 2>&1
@@ -194,7 +194,8 @@ stop_service() {
 	mark=$(uci_get fwmark); table=$(uci_get route_table)
 	teardown_route "$mark" "$table"
 	teardown_nft
-	rm -f "$DNSMASQ_CONF"
+	ip link del "$(uci_get tun_name)" 2>/dev/null
+	rm -f "$DNSMASQ_CONF" /tmp/dnsmasq.d/mierukop-domains.conf
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	log "stopped"
 }

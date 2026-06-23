@@ -13,9 +13,13 @@ Usage: mierukop <command>
   start | stop | restart     manage the service
   status                     show service + tunnel health
   test                       check tunnel exit IP + a proxied domain
-  update                     re-download subnet lists (via the tunnel)
+  update                     re-download all lists (via the tunnel) + apply
+  lists                      show available community lists
+  list add <name>            enable a community list (then: mierukop update)
+  list del <name>            disable a community list
+  list show                  show enabled community lists
   set-server <ip> <port> <user> <pass>   configure mieru endpoint
-  add-domain <domain>        route a domain through the tunnel
+  add-domain <domain>        route a single domain through the tunnel
   add-subnet <cidr>          route a subnet through the tunnel
   count                      how many subnets are loaded
 EOF
@@ -37,7 +41,24 @@ case "$1" in
 		echo -n "telegram via tunnel: "
 		curl -fs --max-time 12 --proxy "socks5h://127.0.0.1:${SOCKS_PORT}" -o /dev/null -w "HTTP %{http_code}\n" https://core.telegram.org/ 2>/dev/null || echo "FAIL"
 		;;
-	update) /etc/mierukop/update-lists.sh download ;;
+	update) echo "downloading lists via tunnel…"; /etc/mierukop/update-lists.sh download; echo "done. $(/usr/bin/mierukop count) subnets in set" ;;
+	lists)  echo "available:"; /etc/mierukop/update-lists.sh available | tr " " "\n" | sed "/^$/d;s/^/  /" ;;
+	list)
+		case "$2" in
+			show) echo "enabled: $(uci -q get $CONF.settings.community_lists)" ;;
+			add)
+				[ -n "$3" ] || { echo "usage: mierukop list add <name>"; exit 1; }
+				cur=" $(uci -q get $CONF.settings.community_lists) "
+				case "$cur" in *" $3 "*) echo "$3 already enabled"; exit 0;; esac
+				uci set $CONF.settings.community_lists="$(echo $cur $3)"; uci commit $CONF
+				echo "enabled $3; run: mierukop update" ;;
+			del)
+				[ -n "$3" ] || { echo "usage: mierukop list del <name>"; exit 1; }
+				new=$(uci -q get $CONF.settings.community_lists | tr " " "\n" | grep -vx "$3" | tr "\n" " ")
+				uci set $CONF.settings.community_lists="$new"; uci commit $CONF
+				echo "disabled $3; run: mierukop restart" ;;
+			*) echo "usage: mierukop list [show|add <name>|del <name>]" ;;
+		esac ;;
 	count) nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' | wc -l ;;
 	set-server)
 		[ $# -eq 5 ] || { echo "usage: mierukop set-server <ip> <port> <user> <pass>"; exit 1; }
