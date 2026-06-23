@@ -175,12 +175,21 @@ teardown_route() {
 }
 
 write_mieru_conf() {
-	local sv server port user pass socks
+	local sv server port user pass socks transport bindings
 	sv=$(active_server)
 	server=$(srv_get "$sv" address); port=$(srv_get "$sv" port)
 	user=$(srv_get "$sv" username); pass=$(srv_get "$sv" password)
 	socks=$(uci_get socks_port)
-	log "active server: $(srv_get "$sv" label) ($server:$port)"
+	# Honour the per-server transport. UDP avoids TCP-over-TCP meltdown (large
+	# downloads like Telegram media collapse under loss when both layers are TCP).
+	# TCP looks more like normal traffic to DPI. Anything else = both (mieru picks).
+	transport=$(srv_get "$sv" transport)
+	case "$transport" in
+		TCP) bindings="{ \"port\": $port, \"protocol\": \"TCP\" }" ;;
+		UDP) bindings="{ \"port\": $port, \"protocol\": \"UDP\" }" ;;
+		*)   bindings="{ \"port\": $port, \"protocol\": \"TCP\" }, { \"port\": $port, \"protocol\": \"UDP\" }" ;;
+	esac
+	log "active server: $(srv_get "$sv" label) ($server:$port, ${transport:-auto})"
 	mkdir -p "$RUN_DIR"
 	cat > "$MIERU_CONF" <<EOF
 {
@@ -189,10 +198,7 @@ write_mieru_conf() {
     "user": { "name": "$user", "password": "$pass" },
     "servers": [{
       "ipAddress": "$server",
-      "portBindings": [
-        { "port": $port, "protocol": "TCP" },
-        { "port": $port, "protocol": "UDP" }
-      ]
+      "portBindings": [ $bindings ]
     }],
     "mtu": 1400,
     "multiplexing": { "level": "MULTIPLEXING_MIDDLE" }
