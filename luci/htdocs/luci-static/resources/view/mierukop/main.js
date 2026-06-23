@@ -13,14 +13,19 @@
  */
 
 var CSS = `
-.mk-chart{display:block;width:100%;height:120px}
+.mk-chart{display:block;width:100%;height:130px;border:1px solid rgba(127,127,127,.3);border-radius:3px;
+          background:rgba(127,127,127,.05)}
 .mk-act{margin:10px 0 0;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-.mk-now{font-family:monospace;font-size:12px;margin-bottom:6px;color:inherit;opacity:.8}
+.mk-leg{display:flex;gap:22px;flex-wrap:wrap;margin-top:8px;font-size:12px}
+.mk-leg span{display:inline-flex;align-items:center;gap:7px}
+.mk-leg i{width:12px;height:12px;border-radius:2px;display:inline-block;flex:0 0 auto}
+.mk-leg b{font-weight:600}
 .mk-out{white-space:pre-wrap;font-family:monospace;font-size:12px;background:rgba(127,127,127,.1);
         padding:10px 12px;border-radius:4px;margin-top:10px;max-height:200px;overflow:auto;display:none}
 .mk-up{color:#16a34a;font-weight:bold}.mk-down{color:#dc2626;font-weight:bold}.mk-warn{color:#d97706;font-weight:bold}
 .mk-st td{padding:5px 8px}
 `;
+var RX_COL='#16a34a', TX_COL='#2563eb';
 
 function fmtRate(bps){
   bps = bps || 0;
@@ -41,28 +46,37 @@ return view.extend({
   exec: function(args){ return fs.exec('/usr/bin/mierukop', args)
     .then(function(r){ return (r.stdout||'')+(r.stderr||''); }).catch(function(){ return ''; }); },
 
-  // ── traffic chart (monochrome SVG, follows theme via currentColor) ──
+  // ── traffic chart, LuCI realtime-graph style: grid + two filled series ──
   drawChart: function(){
-    var b=this.buf, W=600, H=120, pad=4;
+    var b=this.buf, W=600, H=130, pad=6;
     var max=1; b.forEach(function(p){ if(p.rx>max)max=p.rx; if(p.tx>max)max=p.tx; });
+    // round the scale up to a "nice" value for the peak label
     var n=b.length, step = n>1 ? W/(n-1) : W;
+    var Y=function(v){ return (H-pad-(v/max)*(H-pad*2)).toFixed(1); };
     var path=function(key,close){
       if(!n) return '';
       var d=''; b.forEach(function(p,i){
-        var x=(i*step).toFixed(1), y=(H-pad-(p[key]/max)*(H-pad*2)).toFixed(1);
-        d += (i?'L':'M')+x+' '+y+' ';
+        var x=(i*step).toFixed(1);
+        d += (i?'L':'M')+x+' '+Y(p[key])+' ';
       });
       if(close) d += 'L'+((n-1)*step).toFixed(1)+' '+H+' L0 '+H+' Z';
       return d;
     };
+    // horizontal grid (LuCI graphs draw a few scale lines)
+    var grid=''; for(var g=1; g<4; g++){ var gy=(H*g/4).toFixed(1);
+      grid += '<line x1="0" y1="'+gy+'" x2="'+W+'" y2="'+gy+'" stroke="currentColor" stroke-opacity=".12"/>'; }
     var last=b[n-1]||{rx:0,tx:0};
-    this._now.innerHTML='DOWN <b>'+fmtRate(last.rx)+'</b> &nbsp; UP <b>'+fmtRate(last.tx)+'</b>';
+    this._leg.innerHTML=''
+      + '<span><i style="background:'+RX_COL+'"></i>'+_('Download')+' <b>'+fmtRate(last.rx)+'</b></span>'
+      + '<span><i style="background:'+TX_COL+'"></i>'+_('Upload')+' <b>'+fmtRate(last.tx)+'</b></span>'
+      + '<span style="opacity:.65">'+_('peak')+' <b>'+fmtRate(max)+'</b></span>';
     this._svg.innerHTML=''
-      + '<svg class="mk-chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="color:inherit">'
-      + '<line x1="0" y1="'+(H/2)+'" x2="'+W+'" y2="'+(H/2)+'" stroke="currentColor" stroke-opacity=".15" stroke-dasharray="3 4"/>'
-      + '<path d="'+path('rx',true)+'" fill="currentColor" fill-opacity=".12"/>'
-      + '<path d="'+path('rx',false)+'" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>'
-      + '<path d="'+path('tx',false)+'" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="1.5" stroke-dasharray="2 3"/>'
+      + '<svg class="mk-chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
+      + grid
+      + '<path d="'+path('rx',true)+'" fill="'+RX_COL+'" fill-opacity=".22"/>'
+      + '<path d="'+path('rx',false)+'" fill="none" stroke="'+RX_COL+'" stroke-width="1.5" stroke-linejoin="round"/>'
+      + '<path d="'+path('tx',true)+'" fill="'+TX_COL+'" fill-opacity=".18"/>'
+      + '<path d="'+path('tx',false)+'" fill="none" stroke="'+TX_COL+'" stroke-width="1.5" stroke-linejoin="round"/>'
       + '</svg>';
   },
 
@@ -206,13 +220,11 @@ return view.extend({
       ]);
 
       // ── traffic chart section ──
-      self._now=E('div',{'class':'mk-now'},'—');
       self._svg=E('div',{});
+      self._leg=E('div',{'class':'mk-leg'});
       var chartSection=E('div',{'class':'cbi-section'},[
         E('h3',{},_('Tunnel traffic')),
-        self._now, self._svg,
-        E('div',{style:'font-size:11px;opacity:.7;margin-top:4px'},
-          _('Solid line = download, dashed = upload'))
+        self._svg, self._leg
       ]);
 
       // ── quality section (ping / speedtest) ──
