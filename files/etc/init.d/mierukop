@@ -204,6 +204,7 @@ write_mieru_conf() {
   "loggingLevel": "INFO"
 }
 EOF
+	chmod 600 "$MIERU_CONF" 2>/dev/null   # contains the mieru password
 }
 
 write_hev_conf() {
@@ -242,30 +243,12 @@ misc:
 EOF
 }
 
-setup_dnsmasq() {
-	# Route configured domains through the tunnel: dnsmasq adds resolved IPs to the nft set.
-	# SAFETY: the `nftset=` directive requires dnsmasq-full. On plain dnsmasq it would
-	# crash the resolver (DNS down for the whole LAN), so we skip it unless supported.
-	rm -f "$DNSMASQ_CONF"
-	if ! dnsmasq --help 2>&1 | grep -q -- '--nftset'; then
-		log "dnsmasq has no nftset support (install dnsmasq-full) — domain routing disabled, subnets still work"
-		return 0
-	fi
-	mkdir -p /tmp/dnsmasq.d
-	: > "$DNSMASQ_CONF"
-	config_load "$CONF"
-	config_list_foreach user domain _emit_domain
-	[ -s "$DNSMASQ_CONF" ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1
-}
-_emit_domain() {
-	# nftset syntax for OpenWrt fw4 (nftables): add resolved IPs to our set
-	echo "nftset=/$1/4#${NFT_TABLE##* }#${NFT_TABLE%% *}#${NFT_SET}" >> "$DNSMASQ_CONF"
-}
-
 start_service() {
 	[ "$(uci_get enabled)" = "1" ] || { log "disabled in config"; return 0; }
 	local mark table tun
 	mark=$(uci_get fwmark); table=$(uci_get route_table); tun=$(uci_get tun_name)
+
+	chmod 600 /etc/config/mierukop 2>/dev/null   # server credentials live here
 
 	write_mieru_conf
 	write_hev_conf
@@ -279,7 +262,9 @@ start_service() {
 	# 1) mieru client (socks5 transport)
 	procd_open_instance mieru
 	procd_set_param command /usr/bin/mieru run
-	procd_set_param env HOME=/root
+	# cap the Go runtime heap: cuts mieru RSS ~60% (≈40MB -> ≈16MB) on routers.
+	# GOMEMLIMIT is a soft cap; GOGC=20 trades a little CPU for much less RAM.
+	procd_set_param env HOME=/root GOGC=20 GOMEMLIMIT=48MiB
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1
 	procd_set_param stderr 1

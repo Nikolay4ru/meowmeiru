@@ -62,16 +62,33 @@ command -v ip >/dev/null && ip rule list >/dev/null 2>&1 || \
 	say "WARNING: 'ip rule' unavailable — ensure ip-full (iproute2) is installed, busybox ip won't work"
 
 # ── binaries: mieru + hev-socks5-tunnel ──
-get_bin() { # get_bin <name> <primary-url> <dest>
-	local name="$1" url="$2" dest="$3"
+# Pinned sha256 for the DEFAULT versions (supply-chain check). Only the arches we
+# have verified are listed; others fall back to a warning instead of a hard fail.
+# Refresh these when bumping MIERU_VER/HEV_VER.
+sha_for() { # sha_for <name> <arch>
+	[ "$MIERU_VER" = "3.18.0" ] && case "$1:$2" in
+		mieru:arm64) echo 5172a716ebf4d8653a04bba6e8f4837f816173841c66d027d073915f08b65705; return;; esac
+	[ "$HEV_VER" = "2.7.5" ] && case "$1:$2" in
+		hev-socks5-tunnel:arm64) echo 311677bc9ed408fad8a9688d58580d4c125d4a0b8d5dd8d3b1a1e60e7e8733a8; return;; esac
+}
+verify_sha() { # verify_sha <file> <name> <arch>
+	local want got; want=$(sha_for "$2" "$3")
+	[ -n "$want" ] || { say "no pinned checksum for $2/$3 — skipping verify"; return 0; }
+	command -v sha256sum >/dev/null || { say "sha256sum unavailable — skipping verify"; return 0; }
+	got=$(sha256sum "$1" 2>/dev/null | awk '{print $1}')
+	[ "$got" = "$want" ] && { say "$2 checksum OK"; return 0; }
+	rm -f "$1"; err "checksum MISMATCH for $2 (got ${got:-none}) — refusing to install a tampered binary"
+}
+get_bin() { # get_bin <name> <primary-url> <dest> <arch>
+	local name="$1" url="$2" dest="$3" arch="$4"
 	if [ -x "$dest" ]; then say "$name already present"; return 0; fi
 	say "fetching $name…"
 	if dl "$url" "$dest" 2>/dev/null && [ -s "$dest" ]; then
-		chmod +x "$dest"; return 0
+		verify_sha "$dest" "$name" "$arch"; chmod +x "$dest"; return 0
 	fi
 	# mirror fallback
 	if [ -n "$MIRROR" ] && dl "$MIRROR/bin/$name" "$dest" 2>/dev/null && [ -s "$dest" ]; then
-		chmod +x "$dest"; return 0
+		verify_sha "$dest" "$name" "$arch"; chmod +x "$dest"; return 0
 	fi
 	err "could not fetch $name (set MIERUKOP_MIRROR to a reachable host that serves /bin/$name)"
 }
@@ -79,11 +96,11 @@ get_bin() { # get_bin <name> <primary-url> <dest>
 if ! command -v mieru >/dev/null; then
 	get_bin mieru \
 		"https://github.com/enfein/mieru/releases/download/v${MIERU_VER}/mieru_linux_${MARCH}" \
-		/usr/bin/mieru
+		/usr/bin/mieru "$MARCH"
 fi
 get_bin hev-socks5-tunnel \
 	"https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VER}/hev-socks5-tunnel-linux-${HARCH}" \
-	/usr/bin/hev-socks5-tunnel
+	/usr/bin/hev-socks5-tunnel "$HARCH"
 
 # ── package files ──
 say "installing mierukop files…"

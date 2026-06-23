@@ -69,7 +69,10 @@ youtube tiktok google_ai google_play hdrezka russia_inside russia_outside anime 
 
 dl() { curl -fs --max-time 60 --proxy "$PROXY" -o "$2" "$1" 2>/dev/null; }
 
-add_subnet() { nft add element $NFT_TABLE $NFT_SET "{ $1 }" 2>/dev/null; }
+# only allow IPv4/CIDR characters — rejects malformed or hostile list lines so a
+# crafted entry can't smuggle extra tokens into the nft command.
+is_cidr() { case "$1" in ''|*[!0-9./]*) return 1 ;; *) return 0 ;; esac; }
+add_subnet() { is_cidr "$1" || return 0; nft add element $NFT_TABLE $NFT_SET "{ $1 }" 2>/dev/null; }
 
 # True only when dnsmasq is actually COMPILED with nftset (dnsmasq-full).
 # --help lists the option even on plain dnsmasq, but using it then crashes the
@@ -161,7 +164,7 @@ load_subnets() {
 	log "loaded $n subnets into set (+routed DNS $ROUTED_DNS)"
 }
 _add_user_subnet() { add_subnet "$1"; }
-_add_direct_subnet() { nft add element $NFT_TABLE mierukop_direct "{ $1 }" 2>/dev/null; }
+_add_direct_subnet() { is_cidr "$1" || return 0; nft add element $NFT_TABLE mierukop_direct "{ $1 }" 2>/dev/null; }
 
 # legacy custom list_source sections (arbitrary subnet URLs)
 download_custom() {
