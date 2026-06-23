@@ -51,6 +51,7 @@ community_entries() {
 		google_play) echo "domain:Services/google_play.lst" ;;
 		hdrezka)    echo "domain:Services/hdrezka.lst" ;;
 		roblox)     echo "subnet:Subnets/IPv4/roblox.lst";   echo "domain:Services/roblox.lst" ;;
+		russia_inside)  echo "domain:Russia/inside-raw.lst" ;;
 		russia_outside) echo "domain:Russia/outside-raw.lst" ;;
 		anime)      echo "domain:Categories/anime.lst" ;;
 		news)       echo "domain:Categories/news.lst" ;;
@@ -63,7 +64,7 @@ community_entries() {
 
 available_lists() {
 	echo "telegram meta twitter discord cloudflare hetzner digitalocean roblox \
-youtube tiktok google_ai google_play hdrezka russia_outside anime news porn geoblock block"
+youtube tiktok google_ai google_play hdrezka russia_inside russia_outside anime news porn geoblock block"
 }
 
 dl() { curl -fs --max-time 60 --proxy "$PROXY" -o "$2" "$1" 2>/dev/null; }
