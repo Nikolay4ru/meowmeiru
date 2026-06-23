@@ -21,6 +21,10 @@ config mierukop 'settings'
 	option watchdog '1'
 	# kill-switch: drop routed traffic if the tunnel is down (no direct leak)
 	option killswitch '0'
+	# DNS hijack: force LAN clients to use the router's resolver (so domain-based
+	# routing works even if a device is set to its own DNS). Also blocks DoT (853).
+	# Devices using DoH (443) must disable encrypted DNS manually.
+	option dns_hijack '1'
 	# real DNS used to resolve routed domains (reached THROUGH the tunnel)
 	option routed_dns '8.8.8.8'
 	# community lists from itdoginfo/allow-domains (space-separated). Run:

@@ -61,6 +61,22 @@ table $NFT_TABLE {
 	}
 }
 EOF
+	# DNS hijack: force LAN clients onto the router's resolver so routed domains
+	# resolve to the SAME IPs we add to the set (clients using their own DNS would
+	# otherwise connect to IPs not in the set and bypass the tunnel).
+	if [ "$(uci_get dns_hijack)" != "0" ]; then
+		local lan; lan=$(uci_get lan_ifname); [ -n "$lan" ] || lan=br-lan
+		nft -f - <<EOF2
+table $NFT_TABLE {
+	chain dns_redirect {
+		type nat hook prerouting priority dstnat - 5; policy accept;
+		iifname "$lan" ip daddr != $(ip -4 addr show "$lan" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1) udp dport 53 redirect to :53
+		iifname "$lan" ip daddr != $(ip -4 addr show "$lan" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1) tcp dport 53 redirect to :53
+		iifname "$lan" tcp dport 853 reject
+	}
+}
+EOF2
+	fi
 }
 
 teardown_nft() {
