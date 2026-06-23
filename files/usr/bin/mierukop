@@ -4,6 +4,19 @@ CONF="mierukop"
 NFT_TABLE="inet mierukop"
 NFT_SET="mierukop_subnets"
 SOCKS_PORT="$(uci -q get $CONF.settings.socks_port || echo 1180)"
+PROXY="socks5h://127.0.0.1:${SOCKS_PORT}"
+TUN="$(uci -q get $CONF.settings.tun_name || echo mtun0)"
+STATE_DIR="/tmp/mierukop"; mkdir -p "$STATE_DIR" 2>/dev/null
+TRAFFIC_LOG="$STATE_DIR/traffic.csv"
+
+# ── server helpers (mirror init.d) ──
+server_list() { uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=server$/\1/p"; }
+active_server() {
+	local a; a=$(uci -q get $CONF.settings.active_server)
+	if [ -n "$a" ] && [ "$(uci -q get $CONF.$a)" = "server" ]; then echo "$a"; return; fi
+	server_list | head -1
+}
+srv_get() { uci -q get "$CONF.$1.$2"; }
 
 usage() {
 	cat <<EOF
@@ -13,12 +26,19 @@ Usage: mierukop <command>
   start | stop | restart     manage the service
   status                     show service + tunnel health
   test                       check tunnel exit IP + a proxied domain
+  ping                       latency to server + through the tunnel
+  speedtest                  measure tunnel throughput (down/up)
+  stats                      instantaneous tunnel rx/tx counters + rate
+  history                    traffic samples for the dashboard chart
   update                     re-download all lists (via the tunnel) + apply
   lists                      show available community lists
-  list add <name>            enable a community list (then: mierukop update)
-  list del <name>            disable a community list
+  list add|del <name>        enable/disable a community list
   list show                  show enabled community lists
-  set-server <ip> <port> <user> <pass>   configure mieru endpoint
+  server list                show configured servers (* = active)
+  server add <label> <ip> <port> <user> <pass> [TCP|UDP]
+  server del <name>          remove a server
+  server use <name>          switch the active server
+  set-server <ip> <port> <user> <pass>   update the active server endpoint
   add-domain <domain>        route a single domain through the tunnel
   add-subnet <cidr>          route a subnet through the tunnel
   count                      how many subnets are loaded
@@ -28,19 +48,73 @@ EOF
 case "$1" in
 	start|stop|restart) /etc/init.d/mierukop "$1" ;;
 	status)
+		sv=$(active_server)
 		echo "service: $(/etc/init.d/mierukop running >/dev/null 2>&1 && echo running || echo stopped)"
 		echo "mieru:   $(pgrep -f '/usr/bin/mieru' >/dev/null && echo up || echo down)"
 		echo "tun2socks: $(pgrep -f hev-socks5-tunnel >/dev/null && echo up || echo down)"
-		echo "tun dev: $(ip -br addr show $(uci -q get $CONF.settings.tun_name) 2>/dev/null || echo absent)"
+		echo "tun dev: $(ip -br addr show "$TUN" 2>/dev/null || echo absent)"
+		echo "server:  $(srv_get "$sv" label) ($(srv_get "$sv" address):$(srv_get "$sv" port))"
+		echo "servers: $(server_list | wc -w)"
 		echo "subnets: $(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l)"
 		;;
 	test)
 		echo -n "tunnel exit IP: "
-		curl -fs --max-time 12 --proxy "socks5h://127.0.0.1:${SOCKS_PORT}" https://api.ipify.org 2>/dev/null || echo "FAIL"
+		curl -fs --max-time 12 --proxy "$PROXY" https://api.ipify.org 2>/dev/null || echo "FAIL"
 		echo
 		echo -n "telegram via tunnel: "
-		curl -fs --max-time 12 --proxy "socks5h://127.0.0.1:${SOCKS_PORT}" -o /dev/null -w "HTTP %{http_code}\n" https://core.telegram.org/ 2>/dev/null || echo "FAIL"
+		curl -fs --max-time 12 --proxy "$PROXY" -o /dev/null -w "HTTP %{http_code}\n" https://core.telegram.org/ 2>/dev/null || echo "FAIL"
 		;;
+	ping)
+		sv=$(active_server); host=$(srv_get "$sv" address)
+		echo -n "server_rtt_ms: "
+		ping -c 3 -W 2 "$host" 2>/dev/null | awk -F'= ' '/=/{split($2,a,"/"); printf "%.1f\n", a[2]; f=1} END{if(!f)print "n/a"}'
+		echo -n "tunnel_rtt_ms: "
+		t=$(curl -fs --proxy "$PROXY" --max-time 10 -o /dev/null -w '%{time_connect}' https://www.google.com/generate_204 2>/dev/null)
+		[ -n "$t" ] && awk "BEGIN{printf \"%.0f\n\", $t*1000}" || echo "n/a"
+		;;
+	speedtest)
+		res=$(curl -fs --proxy "$PROXY" --max-time 15 -o /dev/null \
+			-w '%{speed_download} %{size_download}' \
+			"https://speed.cloudflare.com/__down?bytes=20000000" 2>/dev/null)
+		spd=$(echo "$res" | awk '{print $1}'); sz=$(echo "$res" | awk '{print $2}')
+		if [ -n "$spd" ] && [ "${sz:-0}" -gt 100000 ]; then
+			awk "BEGIN{printf \"down_mbps: %.1f\n\", $spd*8/1000000}"
+		else
+			echo "down_mbps: 0"; echo "note: download failed (tunnel down?)"
+		fi
+		tmp="$STATE_DIR/up.bin"; head -c 8000000 /dev/zero > "$tmp" 2>/dev/null
+		up=$(curl -fs --proxy "$PROXY" --max-time 10 -o /dev/null \
+			-w '%{speed_upload}' --data-binary @"$tmp" \
+			"https://speed.cloudflare.com/__up" 2>/dev/null)
+		rm -f "$tmp"
+		[ -n "$up" ] && awk "BEGIN{printf \"up_mbps: %.1f\n\", $up*8/1000000}" || echo "up_mbps: 0"
+		;;
+	stats)
+		rx=$(cat /sys/class/net/$TUN/statistics/rx_bytes 2>/dev/null || echo 0)
+		tx=$(cat /sys/class/net/$TUN/statistics/tx_bytes 2>/dev/null || echo 0)
+		now=$(date +%s); pf="$STATE_DIR/stats.prev"; pt=0; prx=0; ptx=0
+		[ -f "$pf" ] && read pt prx ptx < "$pf"
+		echo "$now $rx $tx" > "$pf"
+		dt=$((now-pt)); [ "$dt" -lt 1 ] && dt=1
+		rrate=0; trate=0
+		if [ "$pt" -gt 0 ] && [ "$rx" -ge "$prx" ]; then rrate=$(((rx-prx)/dt)); trate=$(((tx-ptx)/dt)); fi
+		echo "rx_bytes: $rx"; echo "tx_bytes: $tx"
+		echo "rx_rate: $rrate"; echo "tx_rate: $trate"
+		;;
+	sample)
+		# called by cron every minute — append rx/tx rate to a ring buffer
+		rx=$(cat /sys/class/net/$TUN/statistics/rx_bytes 2>/dev/null || echo 0)
+		tx=$(cat /sys/class/net/$TUN/statistics/tx_bytes 2>/dev/null || echo 0)
+		now=$(date +%s); pf="$STATE_DIR/sample.prev"; pt=0; prx=0; ptx=0
+		[ -f "$pf" ] && read pt prx ptx < "$pf"
+		echo "$now $rx $tx" > "$pf"
+		[ "$pt" -gt 0 ] || exit 0
+		dt=$((now-pt)); [ "$dt" -lt 1 ] && dt=1
+		[ "$rx" -ge "$prx" ] || { prx=$rx; ptx=$tx; }
+		echo "$now,$(((rx-prx)/dt)),$(((tx-ptx)/dt))" >> "$TRAFFIC_LOG"
+		tail -n 180 "$TRAFFIC_LOG" > "$TRAFFIC_LOG.tmp" 2>/dev/null && mv "$TRAFFIC_LOG.tmp" "$TRAFFIC_LOG"
+		;;
+	history) [ -f "$TRAFFIC_LOG" ] && cat "$TRAFFIC_LOG" || true ;;
 	update) echo "downloading lists via tunnel…"; /etc/mierukop/update-lists.sh download; echo "done. $(/usr/bin/mierukop count) subnets in set" ;;
 	lists)  echo "available:"; /etc/mierukop/update-lists.sh available | tr " " "\n" | sed "/^$/d;s/^/  /" ;;
 	list)
@@ -59,16 +133,42 @@ case "$1" in
 				echo "disabled $3; run: mierukop restart" ;;
 			*) echo "usage: mierukop list [show|add <name>|del <name>]" ;;
 		esac ;;
-	count) nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' | wc -l ;;
+	server)
+		case "$2" in
+			list|"")
+				act=$(active_server)
+				for s in $(server_list); do
+					mark=" "; [ "$s" = "$act" ] && mark="*"
+					echo "$mark $s | $(srv_get "$s" label) | $(srv_get "$s" address):$(srv_get "$s" port) | $(srv_get "$s" transport)"
+				done ;;
+			add)
+				[ $# -ge 7 ] || { echo "usage: mierukop server add <label> <ip> <port> <user> <pass> [TCP|UDP]"; exit 1; }
+				id="srv$(date +%s)"
+				uci set $CONF.$id=server
+				uci set $CONF.$id.label="$3"; uci set $CONF.$id.address="$4"; uci set $CONF.$id.port="$5"
+				uci set $CONF.$id.username="$6"; uci set $CONF.$id.password="$7"; uci set $CONF.$id.transport="${8:-TCP}"
+				uci commit $CONF
+				echo "added server $id ($3)" ;;
+			del)
+				[ -n "$3" ] || { echo "usage: mierukop server del <name>"; exit 1; }
+				uci -q delete $CONF.$3; uci commit $CONF; echo "deleted $3" ;;
+			use)
+				[ -n "$3" ] || { echo "usage: mierukop server use <name>"; exit 1; }
+				[ "$(uci -q get $CONF.$3)" = "server" ] || { echo "no such server: $3"; exit 1; }
+				uci set $CONF.settings.active_server="$3"; uci commit $CONF
+				echo "active server -> $3; run: mierukop restart" ;;
+			*) echo "usage: mierukop server [list|add|del <name>|use <name>]" ;;
+		esac ;;
 	set-server)
 		[ $# -eq 5 ] || { echo "usage: mierukop set-server <ip> <port> <user> <pass>"; exit 1; }
-		uci set $CONF.settings.server="$2"
-		uci set $CONF.settings.port="$3"
-		uci set $CONF.settings.username="$4"
-		uci set $CONF.settings.password="$5"
+		sv=$(active_server)
+		[ -n "$sv" ] || { sv=main; uci set $CONF.$sv=server; uci set $CONF.settings.active_server=$sv; uci set $CONF.$sv.label="Server 1"; uci set $CONF.$sv.transport=TCP; }
+		uci set $CONF.$sv.address="$2"; uci set $CONF.$sv.port="$3"
+		uci set $CONF.$sv.username="$4"; uci set $CONF.$sv.password="$5"
 		uci commit $CONF
-		echo "saved; run: mierukop restart"
+		echo "saved to server '$sv'; run: mierukop restart"
 		;;
+	count) nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' | wc -l ;;
 	add-domain)
 		[ -n "$2" ] || { echo "usage: mierukop add-domain <domain>"; exit 1; }
 		uci add_list $CONF.user.domain="$2"; uci commit $CONF

@@ -18,6 +18,46 @@ log() { logger -t mierukop "$1"; }
 
 uci_get() { uci -q get "$CONF.settings.$1"; }
 
+# ── server selection (multi-server + failover) ───────────────────────────────
+# List the names of all `config server` sections, in file order.
+server_list() {
+	uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=server$/\1/p"
+}
+# Resolve the active server section name, with sane fallbacks + legacy migration.
+active_server() {
+	local a; a=$(uci_get active_server)
+	if [ -n "$a" ] && [ "$(uci -q get "$CONF.$a")" = "server" ]; then echo "$a"; return; fi
+	# fall back to the first server section
+	local first; first=$(server_list | head -1)
+	[ -n "$first" ] && { echo "$first"; return; }
+	# legacy single-endpoint config → migrate into a 'main' server section
+	if [ -n "$(uci -q get "$CONF.settings.server")" ]; then
+		uci -q set "$CONF.main=server"
+		uci -q set "$CONF.main.label=Server 1"
+		uci -q set "$CONF.main.address=$(uci -q get $CONF.settings.server)"
+		uci -q set "$CONF.main.port=$(uci -q get $CONF.settings.port)"
+		uci -q set "$CONF.main.username=$(uci -q get $CONF.settings.username)"
+		uci -q set "$CONF.main.password=$(uci -q get $CONF.settings.password)"
+		uci -q set "$CONF.main.transport=$(uci -q get $CONF.settings.transport || echo TCP)"
+		uci -q set "$CONF.settings.active_server=main"
+		uci -q commit "$CONF"
+		echo main
+	fi
+}
+srv_get() { uci -q get "$CONF.$1.$2"; }
+# Rotate active_server to the next section in the list (wraps around).
+rotate_server() {
+	local cur next first prev found=""
+	cur=$(active_server)
+	first=$(server_list | head -1)
+	next=$(server_list | awk -v c="$cur" 'f{print;exit} $0==c{f=1}')
+	[ -n "$next" ] || next="$first"
+	[ -n "$next" ] && [ "$next" != "$cur" ] || return 1
+	uci -q set "$CONF.settings.active_server=$next"; uci -q commit "$CONF"
+	log "failover: $cur -> $next ($(srv_get $next label))"
+	echo "$next"
+}
+
 setup_nft() {
 	local set_name="$1" mark="$2" tun
 	tun=$(uci_get tun_name)
@@ -112,8 +152,10 @@ teardown_fw_zone() {
 setup_cron() {
 	local cron="/etc/crontabs/root" iv
 	touch "$cron"
-	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d' "$cron"
+	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d' "$cron"
 	[ "$(uci_get watchdog)" = "1" ] && echo "*/5 * * * * /etc/mierukop/watchdog.sh" >> "$cron"
+	# traffic sampler for the dashboard chart (every minute)
+	echo "* * * * * /usr/bin/mierukop sample" >> "$cron"
 	iv=$(uci_get update_interval)
 	[ -n "$iv" ] && [ "$iv" != "0" ] && echo "23 5 */$(( iv/24>0 ? iv/24 : 1 )) * * /etc/mierukop/update-lists.sh download" >> "$cron"
 	/etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1
@@ -133,9 +175,12 @@ teardown_route() {
 }
 
 write_mieru_conf() {
-	local server port proto user pass socks
-	server=$(uci_get server); port=$(uci_get port); proto=$(uci_get protocol)
-	user=$(uci_get username); pass=$(uci_get password); socks=$(uci_get socks_port)
+	local sv server port user pass socks
+	sv=$(active_server)
+	server=$(srv_get "$sv" address); port=$(srv_get "$sv" port)
+	user=$(srv_get "$sv" username); pass=$(srv_get "$sv" password)
+	socks=$(uci_get socks_port)
+	log "active server: $(srv_get "$sv" label) ($server:$port)"
 	mkdir -p "$RUN_DIR"
 	cat > "$MIERU_CONF" <<EOF
 {
@@ -270,7 +315,7 @@ stop_service() {
 	teardown_fw_zone "$(uci_get tun_name)"
 	ip link del "$(uci_get tun_name)" 2>/dev/null
 	rm -f "$DNSMASQ_CONF" /tmp/dnsmasq.d/mierukop-domains.conf /tmp/dnsmasq.*.d/mierukop-domains.conf 2>/dev/null
-	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d' /etc/crontabs/root 2>/dev/null
+	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d' /etc/crontabs/root 2>/dev/null
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	log "stopped"
 }

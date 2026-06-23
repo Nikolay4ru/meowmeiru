@@ -1,13 +1,9 @@
 config mierukop 'settings'
 	option enabled '1'
-	# mieru server endpoint
-	option server '0.0.0.0'
-	option port '30443'
-	option protocol 'TCP'
-	option username 'CHANGE_ME'
-	option password 'CHANGE_ME'
-	# transport: tcp | udp
-	option transport 'TCP'
+	# which `config server` section is currently live
+	option active_server 'main'
+	# automatically switch to the next server if the active one fails
+	option failover '1'
 	# local socks5 that mieru exposes
 	option socks_port '1180'
 	# tun device + routing table/mark
@@ -35,6 +31,16 @@ config mierukop 'settings'
 	# domain only:   youtube tiktok google_ai google_play hdrezka
 	#                russia_outside anime news porn geoblock block
 	option community_lists 'telegram youtube discord meta twitter'
+
+# mieru servers. Add more sections for auto-failover; `active_server` above picks
+# the live one. Configure via:  mierukop server add <label> <ip> <port> <user> <pass>
+config server 'main'
+	option label 'Server 1'
+	option address '0.0.0.0'
+	option port '30443'
+	option username 'CHANGE_ME'
+	option password 'CHANGE_ME'
+	option transport 'TCP'
 
 # Optional custom subnet-list URLs (arbitrary). type must be 'subnet'.
 #config list_source 'mycustom'

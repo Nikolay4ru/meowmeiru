@@ -32,7 +32,18 @@ case "$code" in
 		echo "$n" > "$STATE"
 		logger -t mierukop-wd "tunnel probe failed ($code), strike $n/2"
 		if [ "$n" -ge 2 ]; then
-			logger -t mierukop-wd "restarting mierukop"
+			# auto-failover: if enabled and more than one server, rotate to the next
+			servers=$(uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=server$/\1/p")
+			cnt=$(echo $servers | wc -w)
+			if [ "$(uci -q get $CONF.settings.failover)" != "0" ] && [ "$cnt" -gt 1 ]; then
+				cur=$(uci -q get $CONF.settings.active_server)
+				next=$(echo "$servers" | tr ' ' '\n' | awk -v c="$cur" 'f{print;exit} $0==c{f=1}')
+				[ -n "$next" ] || next=$(echo $servers | awk '{print $1}')
+				uci set $CONF.settings.active_server="$next"; uci commit $CONF
+				logger -t mierukop-wd "failover: $cur -> $next, restarting"
+			else
+				logger -t mierukop-wd "restarting mierukop"
+			fi
 			/etc/init.d/mierukop restart
 			rm -f "$STATE"
 		fi
