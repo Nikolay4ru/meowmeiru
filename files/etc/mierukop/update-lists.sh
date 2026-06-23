@@ -16,7 +16,15 @@ CONF="mierukop"
 NFT_TABLE="inet mierukop"
 NFT_SET="mierukop_subnets"
 CACHE="/etc/mierukop/lists"
-DNSMASQ_CONF="/tmp/dnsmasq.d/mierukop-domains.conf"
+# OpenWrt's dnsmasq loads an instance-specific conf-dir (/tmp/dnsmasq.<cfg>.d),
+# NOT /tmp/dnsmasq.d — detect the real one so our drop-in is actually read.
+dnsmasq_confdir() {
+	local d
+	d=$(ls -d /tmp/dnsmasq.*.d 2>/dev/null | head -1)
+	[ -n "$d" ] && [ -d "$d" ] && { echo "$d"; return; }
+	echo "/tmp/dnsmasq.d"
+}
+DNSMASQ_CONF="$(dnsmasq_confdir)/mierukop-domains.conf"
 REPO="https://raw.githubusercontent.com/itdoginfo/allow-domains/main"
 SOCKS_PORT="$(uci -q get $CONF.settings.socks_port || echo 1180)"
 PROXY="socks5h://127.0.0.1:${SOCKS_PORT}"
@@ -83,7 +91,7 @@ download_name() {
 # Build the dnsmasq domain drop-in from all cached *.domain.lst files
 build_domain_dnsmasq() {
 	dnsmasq_full || { log "dnsmasq-full required for domain lists — skipping (subnets still work)"; rm -f "$DNSMASQ_CONF"; return 0; }
-	mkdir -p /tmp/dnsmasq.d
+	mkdir -p "$(dirname "$DNSMASQ_CONF")"
 	: > "$DNSMASQ_CONF"
 	local nset="4#${NFT_TABLE##* }#${NFT_TABLE%% *}#${NFT_SET}"   # 4#mierukop#inet#mierukop_subnets → reorder below
 	# correct nftset target: 4#<family>#<table>#<set>  (family=inet, table=mierukop)

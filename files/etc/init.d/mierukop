@@ -195,7 +195,7 @@ stop_service() {
 	teardown_route "$mark" "$table"
 	teardown_nft
 	ip link del "$(uci_get tun_name)" 2>/dev/null
-	rm -f "$DNSMASQ_CONF" /tmp/dnsmasq.d/mierukop-domains.conf
+	rm -f "$DNSMASQ_CONF" /tmp/dnsmasq.d/mierukop-domains.conf /tmp/dnsmasq.*.d/mierukop-domains.conf 2>/dev/null
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	log "stopped"
 }
