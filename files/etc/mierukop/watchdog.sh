@@ -10,6 +10,13 @@ CONF="mierukop"
 SOCKS="127.0.0.1:$(uci -q get $CONF.settings.socks_port || echo 1180)"
 STATE="/tmp/mierukop.wdfail"
 
+# Self-heal: if the routing set got emptied (e.g. by a restart race), reload it.
+SETCNT=$(nft list set inet mierukop mierukop_subnets 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l)
+if [ "${SETCNT:-0}" -lt 10 ]; then
+	logger -t mierukop-wd "routing set near-empty ($SETCNT) — reapplying lists"
+	/etc/mierukop/update-lists.sh apply >/dev/null 2>&1
+fi
+
 probe() {
 	# 204/200/302 from a tunneled connectivity check = healthy
 	curl -fs --socks5-hostname "$SOCKS" --max-time 12 -o /dev/null \
