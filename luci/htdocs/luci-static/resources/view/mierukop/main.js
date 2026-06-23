@@ -29,9 +29,9 @@ var RX_COL='#16a34a', TX_COL='#2563eb';
 
 function fmtRate(bps){
   bps = bps || 0;
-  if (bps >= 1048576) return (bps/1048576).toFixed(1)+' MB/s';
-  if (bps >= 1024)    return (bps/1024).toFixed(0)+' KB/s';
-  return bps+' B/s';
+  if (bps >= 1048576) return (bps/1048576).toFixed(1)+' МБ/с';
+  if (bps >= 1024)    return (bps/1024).toFixed(0)+' КБ/с';
+  return bps+' Б/с';
 }
 
 return view.extend({
@@ -67,9 +67,9 @@ return view.extend({
       grid += '<line x1="0" y1="'+gy+'" x2="'+W+'" y2="'+gy+'" stroke="currentColor" stroke-opacity=".12"/>'; }
     var last=b[n-1]||{rx:0,tx:0};
     this._leg.innerHTML=''
-      + '<span><i style="background:'+RX_COL+'"></i>'+_('Download')+' <b>'+fmtRate(last.rx)+'</b></span>'
-      + '<span><i style="background:'+TX_COL+'"></i>'+_('Upload')+' <b>'+fmtRate(last.tx)+'</b></span>'
-      + '<span style="opacity:.65">'+_('peak')+' <b>'+fmtRate(max)+'</b></span>';
+      + '<span><i style="background:'+RX_COL+'"></i>'+_('Загрузка')+' <b>'+fmtRate(last.rx)+'</b></span>'
+      + '<span><i style="background:'+TX_COL+'"></i>'+_('Отдача')+' <b>'+fmtRate(last.tx)+'</b></span>'
+      + '<span style="opacity:.65">'+_('пик')+' <b>'+fmtRate(max)+'</b></span>';
     this._svg.innerHTML=''
       + '<svg class="mk-chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
       + grid
@@ -93,9 +93,9 @@ return view.extend({
       var svc=(s.service==='running'), mieru=(s.mieru==='up'), tun=(s.tun2socks==='up');
       var connected=svc&&mieru&&tun;
       var set=function(node,cls,txt){ node.className=cls; node.textContent=txt; };
-      set(self._v.service, svc?'mk-up':'mk-down', svc?_('running'):_('stopped'));
+      set(self._v.service, svc?'mk-up':'mk-down', svc?_('работает'):_('остановлен'));
       set(self._v.tunnel, connected?'mk-up':(mieru?'mk-warn':'mk-down'),
-          connected?_('connected'):(mieru?'mieru only':_('down')));
+          connected?_('подключён'):(mieru?_('только mieru'):_('недоступен')));
       self._v.server.textContent=s.server||'—';
       self._v.subnets.textContent=s.subnets||'—';
       // state-aware buttons
@@ -135,59 +135,59 @@ return view.extend({
 
     s=m.section(form.NamedSection,'settings','mierukop');
     s.anonymous=true; s.addremove=false;
-    s.tab('conn',_('Connection'));
-    s.tab('lists',_('Routing'));
-    s.tab('adv',_('Advanced'));
+    s.tab('conn',_('Подключение'));
+    s.tab('lists',_('Маршрутизация'));
+    s.tab('adv',_('Дополнительно'));
 
-    o=s.taboption('conn',form.Flag,'enabled',_('Enabled')); o.rmempty=false;
-    o=s.taboption('conn',form.ListValue,'active_server',_('Active server'),
-      _('Which server below carries traffic. Edit credentials in the Servers section.'));
+    o=s.taboption('conn',form.Flag,'enabled',_('Включено')); o.rmempty=false;
+    o=s.taboption('conn',form.ListValue,'active_server',_('Активный сервер'),
+      _('Какой сервер ниже пропускает трафик. Учётные данные задаются в разделе «Серверы».'));
     uci.sections('mierukop','server').forEach(function(sv){
       o.value(sv['.name'], (sv.label||sv['.name'])+' — '+(sv.address||'')+':'+(sv.port||''));
     });
-    o=s.taboption('conn',form.Flag,'failover',_('Auto-failover'),
-      _('Switch to the next server automatically if the active one stops passing traffic.'));
+    o=s.taboption('conn',form.Flag,'failover',_('Авто-переключение'),
+      _('Автоматически переключаться на следующий сервер, если активный перестаёт пропускать трафик.'));
 
-    o=s.taboption('lists',form.MultiValue,'community_lists',_('Community lists'),
-      _('Services routed through the tunnel (itdoginfo/allow-domains). Press “Update lists” after changing.'));
+    o=s.taboption('lists',form.MultiValue,'community_lists',_('Списки сообщества'),
+      _('Сервисы, маршрутизируемые через туннель (itdoginfo/allow-domains). После изменения нажмите «Обновить списки».'));
     o.display_size=16;
     ['telegram','meta','twitter','discord','roblox','cloudflare','hetzner','digitalocean',
      'youtube','tiktok','google_ai','google_play','hdrezka',
      'russia_inside','russia_outside','anime','news','porn','geoblock','block'].forEach(function(n){ o.value(n,n); });
     o.rmempty=true;
-    o=s.taboption('lists',form.Value,'routed_dns',_('Resolver for routed domains'),
-      _('Real DNS used to resolve routed domains (tunneled, bypasses DPI/fake-IP).'));
+    o=s.taboption('lists',form.Value,'routed_dns',_('DNS для маршрутизируемых доменов'),
+      _('Реальный DNS для разрешения маршрутизируемых доменов (идёт через туннель, в обход DPI/fake-IP).'));
     o.datatype='ipaddr'; o.placeholder='8.8.8.8'; o.optional=true;
 
-    o=s.taboption('adv',form.Flag,'watchdog',_('Watchdog'),
-      _('Auto-restart the tunnel if it stops passing traffic (checked every 5 min).'));
-    o=s.taboption('adv',form.Flag,'killswitch',_('Kill-switch'),
-      _('Drop routed traffic if the tunnel is down, instead of leaking it directly.'));
-    o=s.taboption('adv',form.Flag,'dns_hijack',_('Force router DNS'),
-      _('Redirect client DNS to the router so domain routing works for every device.'));
-    o=s.taboption('adv',form.Value,'update_interval',_('List refresh (hours)'));
+    o=s.taboption('adv',form.Flag,'watchdog',_('Сторож (watchdog)'),
+      _('Автоперезапуск туннеля, если он перестал пропускать трафик (проверка каждые 5 мин).'));
+    o=s.taboption('adv',form.Flag,'killswitch',_('Блокировка утечки (kill-switch)'),
+      _('Отбрасывать маршрутизируемый трафик, если туннель недоступен, вместо утечки напрямую.'));
+    o=s.taboption('adv',form.Flag,'dns_hijack',_('Принудительный DNS роутера'),
+      _('Перенаправлять DNS клиентов на роутер, чтобы доменная маршрутизация работала для всех устройств.'));
+    o=s.taboption('adv',form.Value,'update_interval',_('Обновление списков (часы)'));
     o.datatype='uinteger'; o.placeholder='24';
-    o=s.taboption('adv',form.Value,'socks_port',_('Local SOCKS5 port')); o.datatype='port'; o.optional=true;
-    o=s.taboption('adv',form.Value,'tun_name',_('Tunnel interface')); o.optional=true; o.placeholder='mtun0';
+    o=s.taboption('adv',form.Value,'socks_port',_('Локальный порт SOCKS5')); o.datatype='port'; o.optional=true;
+    o=s.taboption('adv',form.Value,'tun_name',_('Интерфейс туннеля')); o.optional=true; o.placeholder='mtun0';
 
-    s=m.section(form.GridSection,'server',_('Servers'),
-      _('Add more for auto-failover. The active one is selected in Connection.'));
+    s=m.section(form.GridSection,'server',_('Серверы'),
+      _('Добавьте несколько для авто-переключения. Активный выбирается во вкладке «Подключение».'));
     s.addremove=true; s.anonymous=false; s.sortable=false;
-    s.option(form.Value,'label',_('Label'));
-    s.option(form.Value,'address',_('Address')).datatype='host';
-    s.option(form.Value,'port',_('Port')).datatype='port';
-    s.option(form.Value,'username',_('User'));
-    o=s.option(form.Value,'password',_('Password')); o.password=true;
-    o=s.option(form.ListValue,'transport',_('Transport')); o.value('TCP'); o.value('UDP');
+    s.option(form.Value,'label',_('Название'));
+    s.option(form.Value,'address',_('Адрес')).datatype='host';
+    s.option(form.Value,'port',_('Порт')).datatype='port';
+    s.option(form.Value,'username',_('Пользователь'));
+    o=s.option(form.Value,'password',_('Пароль')); o.password=true;
+    o=s.option(form.ListValue,'transport',_('Транспорт')); o.value('TCP'); o.value('UDP');
 
-    s=m.section(form.NamedSection,'user','policy',_('Custom rules'));
+    s=m.section(form.NamedSection,'user','policy',_('Свои правила'));
     s.anonymous=true; s.addremove=false;
-    s.tab('routed',_('Routed (via tunnel)'));
-    s.tab('excluded',_('Excluded (direct)'));
-    o=s.taboption('routed',form.DynamicList,'domain',_('Domain')); o.placeholder='example.com';
-    o=s.taboption('routed',form.DynamicList,'subnet',_('Subnet (CIDR)')); o.datatype='cidr4'; o.placeholder='203.0.113.0/24';
-    o=s.taboption('excluded',form.DynamicList,'exclude_domain',_('Domain (always direct)')); o.placeholder='sberbank.ru';
-    o=s.taboption('excluded',form.DynamicList,'exclude_subnet',_('Subnet (always direct)')); o.datatype='cidr4'; o.placeholder='192.168.0.0/16';
+    s.tab('routed',_('Через туннель'));
+    s.tab('excluded',_('Исключения (напрямую)'));
+    o=s.taboption('routed',form.DynamicList,'domain',_('Домен')); o.placeholder='example.com';
+    o=s.taboption('routed',form.DynamicList,'subnet',_('Подсеть (CIDR)')); o.datatype='cidr4'; o.placeholder='203.0.113.0/24';
+    o=s.taboption('excluded',form.DynamicList,'exclude_domain',_('Домен (всегда напрямую)')); o.placeholder='sberbank.ru';
+    o=s.taboption('excluded',form.DynamicList,'exclude_subnet',_('Подсеть (всегда напрямую)')); o.datatype='cidr4'; o.placeholder='192.168.0.0/16';
 
     return m.render().then(function(formNode){
       var out=E('div',{'class':'mk-out'});
@@ -196,25 +196,25 @@ return view.extend({
       self._v={ service:E('span',{},'—'), tunnel:E('span',{},'—'),
                 server:E('span',{},'—'), subnets:E('span',{},'—') };
       var statusSection=E('div',{'class':'cbi-section'},[
-        E('h3',{},_('Status')),
+        E('h3',{},_('Состояние')),
         E('table',{'class':'table mk-st'},[
-          self.row(_('Service'), self._v.service),
-          self.row(_('Tunnel'), self._v.tunnel),
-          self.row(_('Active server'), self._v.server),
-          self.row(_('Routed subnets'), self._v.subnets)
+          self.row(_('Служба'), self._v.service),
+          self.row(_('Туннель'), self._v.tunnel),
+          self.row(_('Активный сервер'), self._v.server),
+          self.row(_('Маршрутизируется подсетей'), self._v.subnets)
         ]),
         E('div',{'class':'mk-act'},[
-          self.mkBtn('start','cbi-button-positive',_('Start'),   function(){ return self.exec(['start']); }, out),
-          self.mkBtn('stop','cbi-button-negative',_('Stop'),     function(){ return self.exec(['stop']); }, out),
-          self.mkBtn('restart','cbi-button-neutral',_('Restart'),function(){ return self.exec(['restart']); }, out),
-          self.mkBtn('test','cbi-button-action',_('Test'),       function(){
+          self.mkBtn('start','cbi-button-positive',_('Запустить'),   function(){ return self.exec(['start']); }, out),
+          self.mkBtn('stop','cbi-button-negative',_('Остановить'),   function(){ return self.exec(['stop']); }, out),
+          self.mkBtn('restart','cbi-button-neutral',_('Перезапуск'), function(){ return self.exec(['restart']); }, out),
+          self.mkBtn('test','cbi-button-action',_('Проверка'),       function(){
             return self.exec(['test']).then(function(t){
               var mm=(t||'').match(/exit IP:\s*([0-9a-fA-F:.]+)/);
               if(mm){ self._v.server.textContent=self._v.server.textContent+'  ['+mm[1]+']'; }
               return t;
             });
           }, out),
-          self.mkBtn('update','cbi-button-action',_('Update lists'), function(){ return self.exec(['update']); }, out)
+          self.mkBtn('update','cbi-button-action',_('Обновить списки'), function(){ return self.exec(['update']); }, out)
         ]),
         out
       ]);
@@ -223,22 +223,22 @@ return view.extend({
       self._svg=E('div',{});
       self._leg=E('div',{'class':'mk-leg'});
       var chartSection=E('div',{'class':'cbi-section'},[
-        E('h3',{},_('Tunnel traffic')),
+        E('h3',{},_('Трафик туннеля')),
         self._svg, self._leg
       ]);
 
       // ── quality section (ping / speedtest) ──
       self._q={ srtt:E('span',{},'—'), trtt:E('span',{},'—'), down:E('span',{},'—'), up:E('span',{},'—') };
       var qualSection=E('div',{'class':'cbi-section'},[
-        E('h3',{},_('Quality')),
+        E('h3',{},_('Качество связи')),
         E('table',{'class':'table mk-st'},[
-          self.row(_('Server ping (ms)'), self._q.srtt),
-          self.row(_('Tunnel ping (ms)'), self._q.trtt),
-          self.row(_('Download (Mbps)'), self._q.down),
-          self.row(_('Upload (Mbps)'), self._q.up)
+          self.row(_('Пинг до сервера (мс)'), self._q.srtt),
+          self.row(_('Пинг через туннель (мс)'), self._q.trtt),
+          self.row(_('Загрузка (Мбит/с)'), self._q.down),
+          self.row(_('Отдача (Мбит/с)'), self._q.up)
         ]),
         E('div',{'class':'mk-act'},[
-          self.mkBtn('ping','cbi-button-action',_('Ping'), function(){
+          self.mkBtn('ping','cbi-button-action',_('Пинг'), function(){
             return self.exec(['ping']).then(function(t){
               var p=self.parse(t);
               self._q.srtt.textContent=p.server_rtt_ms||'—';
@@ -246,7 +246,7 @@ return view.extend({
               return null;
             });
           }),
-          self.mkBtn('speed','cbi-button-action',_('Speed test'), function(){
+          self.mkBtn('speed','cbi-button-action',_('Тест скорости'), function(){
             self._q.down.textContent='…'; self._q.up.textContent='…';
             return self.exec(['speedtest']).then(function(t){
               var p=self.parse(t);
