@@ -174,34 +174,46 @@ teardown_route() {
 	ip route flush table "$table" 2>/dev/null
 }
 
+# Build the mieru portBindings JSON for one server, honouring its transport.
+# UDP avoids TCP-over-TCP meltdown; TCP blends with normal traffic; empty = both.
+_bindings() {
+	local p="$1" t="$2"
+	case "$t" in
+		TCP) echo "{ \"port\": $p, \"protocol\": \"TCP\" }" ;;
+		UDP) echo "{ \"port\": $p, \"protocol\": \"UDP\" }" ;;
+		*)   echo "{ \"port\": $p, \"protocol\": \"TCP\" }, { \"port\": $p, \"protocol\": \"UDP\" }" ;;
+	esac
+}
+
 write_mieru_conf() {
-	local sv server port user pass socks transport bindings
+	local sv user pass socks mux servers_json="" cnt=0 a p t
 	sv=$(active_server)
-	server=$(srv_get "$sv" address); port=$(srv_get "$sv" port)
 	user=$(srv_get "$sv" username); pass=$(srv_get "$sv" password)
 	socks=$(uci_get socks_port)
-	# Honour the per-server transport. UDP avoids TCP-over-TCP meltdown (large
-	# downloads like Telegram media collapse under loss when both layers are TCP).
-	# TCP looks more like normal traffic to DPI. Anything else = both (mieru picks).
-	transport=$(srv_get "$sv" transport)
-	case "$transport" in
-		TCP) bindings="{ \"port\": $port, \"protocol\": \"TCP\" }" ;;
-		UDP) bindings="{ \"port\": $port, \"protocol\": \"UDP\" }" ;;
-		*)   bindings="{ \"port\": $port, \"protocol\": \"TCP\" }, { \"port\": $port, \"protocol\": \"UDP\" }" ;;
-	esac
-	log "active server: $(srv_get "$sv" label) ($server:$port, ${transport:-auto})"
+	mux=$(uci_get multiplexing); [ -n "$mux" ] || mux=MULTIPLEXING_MIDDLE
+	# NATIVE FAILOVER: list EVERY server that shares the active server's credentials
+	# in one profile's servers[]. mieru itself probes/rotates across them, so if one
+	# dies it transparently uses another (like podkop's url-test selector).
+	for s in $(server_list); do
+		[ "$(srv_get "$s" username)" = "$user" ] && [ "$(srv_get "$s" password)" = "$pass" ] || continue
+		a=$(srv_get "$s" address); p=$(srv_get "$s" port); t=$(srv_get "$s" transport)
+		[ -n "$a" ] && [ -n "$p" ] || continue
+		[ -n "$servers_json" ] && servers_json="$servers_json,"
+		servers_json="$servers_json{ \"ipAddress\": \"$a\", \"portBindings\": [ $(_bindings "$p" "$t") ] }"
+		cnt=$((cnt+1))
+	done
+	# fallback: just the active server if the loop found nothing
+	[ -n "$servers_json" ] || servers_json="{ \"ipAddress\": \"$(srv_get "$sv" address)\", \"portBindings\": [ $(_bindings "$(srv_get "$sv" port)" "$(srv_get "$sv" transport)") ] }"
+	log "mieru: $cnt server(s) in failover pool, mux $mux"
 	mkdir -p "$RUN_DIR"
 	cat > "$MIERU_CONF" <<EOF
 {
   "profiles": [{
     "profileName": "mierukop",
     "user": { "name": "$user", "password": "$pass" },
-    "servers": [{
-      "ipAddress": "$server",
-      "portBindings": [ $bindings ]
-    }],
+    "servers": [ $servers_json ],
     "mtu": 1400,
-    "multiplexing": { "level": "MULTIPLEXING_MIDDLE" }
+    "multiplexing": { "level": "$mux" }
   }],
   "activeProfile": "mierukop",
   "rpcPort": 8965,

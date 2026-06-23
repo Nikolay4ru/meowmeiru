@@ -38,6 +38,8 @@ Usage: mierukop <command>
   server add <label> <ip> <port> <user> <pass> [TCP|UDP]
   server del <name>          remove a server
   server use <name>          switch the active server
+  sub <clash-url>            import all mieru servers from a Clash subscription
+                             (one login -> mieru fails over between them natively)
   set-server <ip> <port> <user> <pass>   update the active server endpoint
   add-domain <domain>        route a single domain through the tunnel
   add-subnet <cidr>          route a subnet through the tunnel
@@ -159,6 +161,53 @@ case "$1" in
 				echo "active server -> $3; run: mierukop restart" ;;
 			*) echo "usage: mierukop server [list|add|del <name>|use <name>]" ;;
 		esac ;;
+	sub)
+		# import mieru servers from a Clash-format subscription (meownet etc.)
+		url="$2"; [ -n "$url" ] || { echo "usage: mierukop sub <clash-subscription-url>"; exit 1; }
+		tmp="$STATE_DIR/sub.yaml"; tsv="$STATE_DIR/sub.tsv"
+		echo "fetching subscription…"
+		curl -fsSL --max-time 30 "$url" -o "$tmp" 2>/dev/null || { echo "download failed"; exit 1; }
+		# parse each `type: mieru` proxy block -> TSV (name server port transport user pass mux)
+		awk '
+		  /^[[:space:]]*-[[:space:]]*name:/ {
+		    if(t=="mieru"&&s!="") print n"\t"s"\t"p"\t"tr"\t"u"\t"pw"\t"mx;
+		    n=$0; sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/,"",n); gsub(/"/,"",n);
+		    t="";s="";p="";tr="TCP";u="";pw="";mx="MULTIPLEXING_MIDDLE"; next }
+		  /^[[:space:]]*type:/        {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);t=v}
+		  /^[[:space:]]*server:/      {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);s=v}
+		  /^[[:space:]]*port:/        {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);p=v}
+		  /^[[:space:]]*transport:/   {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);tr=v}
+		  /^[[:space:]]*username:/    {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);u=v}
+		  /^[[:space:]]*password:/    {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);pw=v}
+		  /^[[:space:]]*multiplexing:/{v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);mx=v}
+		  END { if(t=="mieru"&&s!="") print n"\t"s"\t"p"\t"tr"\t"u"\t"pw"\t"mx }
+		' "$tmp" > "$tsv"
+		cnt=$(grep -c . "$tsv" 2>/dev/null)
+		[ "${cnt:-0}" -gt 0 ] || { echo "no mieru servers found in subscription"; rm -f "$tmp" "$tsv"; exit 1; }
+		# drop existing server sections, import fresh
+		for s in $(server_list); do uci -q delete $CONF.$s; done
+		TAB=$(printf '\t'); first=""; muxset=""
+		while IFS="$TAB" read name srv port tr user pass mux; do
+			[ -n "$srv" ] || continue
+			id="srv$(echo "$srv" | tr -cd '0-9')"
+			uci set $CONF.$id=server
+			uci set $CONF.$id.label="$name"
+			uci set $CONF.$id.address="$srv"
+			uci set $CONF.$id.port="$port"
+			uci set $CONF.$id.transport="${tr:-TCP}"
+			uci set $CONF.$id.username="$user"
+			uci set $CONF.$id.password="$pass"
+			[ -z "$first" ] && first="$id"
+			[ -z "$muxset" ] && muxset="$mux"
+		done < "$tsv"
+		[ -n "$first" ] && uci set $CONF.settings.active_server="$first"
+		[ -n "$muxset" ] && uci set $CONF.settings.multiplexing="$muxset"
+		uci commit $CONF
+		rm -f "$tmp" "$tsv"
+		echo "imported $cnt mieru server(s); mux=$muxset; active=$first"
+		echo "all share one login -> mieru fails over between them natively."
+		echo "run: mierukop restart"
+		;;
 	set-server)
 		[ $# -eq 5 ] || { echo "usage: mierukop set-server <ip> <port> <user> <pass>"; exit 1; }
 		sv=$(active_server)

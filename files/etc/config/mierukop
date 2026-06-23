@@ -6,6 +6,9 @@ config mierukop 'settings'
 	option failover '1'
 	# local socks5 that mieru exposes
 	option socks_port '1180'
+	# mieru multiplexing level: MULTIPLEXING_OFF|LOW|MIDDLE|HIGH (provider-dependent;
+	# meownet subscriptions use LOW). All servers sharing one login fail over natively.
+	option multiplexing 'MULTIPLEXING_MIDDLE'
 	# tun device + routing table/mark
 	option tun_name 'mtun0'
 	option tun_addr '198.18.0.1'
