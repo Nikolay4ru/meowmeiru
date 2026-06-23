@@ -40,6 +40,10 @@ Usage: mierukop <command>
   server use <name>          switch the active server
   sub <clash-url>            import all mieru servers from a Clash subscription
                              (one login -> mieru fails over between them natively)
+  group list                 show routing groups (list -> specific server tunnel)
+  group add <name> <server> <list>...   route given lists via a specific server
+  group del <name>           remove a routing group
+  group server <name> <srv>...          set which server(s) a group uses
   set-server <ip> <port> <user> <pass>   update the active server endpoint
   add-domain <domain>        route a single domain through the tunnel
   add-subnet <cidr>          route a subnet through the tunnel
@@ -160,6 +164,39 @@ case "$1" in
 				uci set $CONF.settings.active_server="$3"; uci commit $CONF
 				echo "active server -> $3; run: mierukop restart" ;;
 			*) echo "usage: mierukop server [list|add|del <name>|use <name>]" ;;
+		esac ;;
+	group)
+		# route a specific list through a specific server via its own tunnel
+		case "$2" in
+			list|"")
+				for g in $(uci show $CONF 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=group$/\1/p"); do
+					st=on; [ "$(uci -q get $CONF.$g.enabled)" = "0" ] && st=off
+					srvs=""; for s in $(uci -q get $CONF.$g.server); do srvs="$srvs $(srv_get "$s" label)"; done
+					echo "  $g [$st] | $(uci -q get $CONF.$g.label) | via:${srvs:- (нет)} | lists: $(uci -q get $CONF.$g.community_lists)"
+				done
+				[ -z "$(uci show $CONF 2>/dev/null | grep -c '=group')" ] && echo "  (групп нет)" ;;
+			add)
+				# mierukop group add <name> <server-section[ server2]> <list> [list2...]
+				[ $# -ge 5 ] || { echo "usage: mierukop group add <name> <server-section> <list> [list2...]"; echo "  серверы: mierukop server list"; exit 1; }
+				gn="g$(echo "$3" | tr -cd 'a-zA-Z0-9')"
+				sv="$4"; [ "$(uci -q get $CONF.$sv)" = "server" ] || {
+					# try to resolve by label substring
+					for s in $(server_list); do case "$(srv_get "$s" label)" in *"$4"*) sv="$s"; break;; esac; done; }
+				[ "$(uci -q get $CONF.$sv)" = "server" ] || { echo "no such server: $4 (mierukop server list)"; exit 1; }
+				uci set $CONF.$gn=group; uci set $CONF.$gn.enabled=1
+				uci set $CONF.$gn.label="$3"; uci set $CONF.$gn.server="$sv"
+				shift 4; uci set $CONF.$gn.community_lists="$*"
+				uci commit $CONF
+				echo "group $gn: lists [$*] via $(srv_get "$sv" label); run: mierukop restart && mierukop update" ;;
+			del)
+				[ -n "$3" ] || { echo "usage: mierukop group del <name>"; exit 1; }
+				uci -q delete $CONF.$3; uci commit $CONF; echo "deleted $3; run: mierukop restart" ;;
+			server)
+				# mierukop group server <name> <server-section[ server2 ...]>  (set the group's servers)
+				[ -n "$3" ] && [ -n "$4" ] || { echo "usage: mierukop group server <name> <server-section...>"; exit 1; }
+				gn="$3"; shift 3; uci set $CONF.$gn.server="$*"; uci commit $CONF
+				echo "group $gn -> servers: $*; run: mierukop restart" ;;
+			*) echo "usage: mierukop group [list|add <name> <server> <lists...>|del <name>|server <name> <servers...>]" ;;
 		esac ;;
 	sub)
 		# import mieru servers from a Clash-format subscription (meownet etc.)

@@ -45,6 +45,17 @@ config server 'main'
 	option password 'CHANGE_ME'
 	option transport 'TCP'
 
+# Routing groups: send specific lists through a SPECIFIC server via their own tunnel
+# (separate mtunN/fwmark/table/set). Everything not in a group uses the default
+# tunnel above. Manage via:  mierukop group add <name> <server-section> <lists...>
+#config group 'gYouTube'
+#	option enabled '1'
+#	option label 'YouTube via DE'
+#	option server 'srv53924952'        # one or more server sections (space-separated)
+#	option community_lists 'youtube'
+#	list domain 'rutube.ru'            # optional extra domains for this group
+#	list subnet '203.0.113.0/24'       # optional extra subnets for this group
+
 # Optional custom subnet-list URLs (arbitrary). type must be 'subnet'.
 #config list_source 'mycustom'
 #	option enabled '1'

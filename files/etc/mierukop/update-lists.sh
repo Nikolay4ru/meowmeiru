@@ -1,41 +1,29 @@
 #!/bin/sh
-# mierukop list updater — community lists (podkop-style) over the mieru tunnel.
+# mierukop list updater — community lists (podkop-style) over the mieru tunnels.
 #
-# Two kinds of lists from github.com/itdoginfo/allow-domains, fetched THROUGH the
-# tunnel (so it works even when raw.githubusercontent.com is DPI-blocked):
-#   • subnet lists  → IP ranges added straight into the nftables set
-#   • domain lists  → dnsmasq drop-in that (a) resolves each domain via a real DNS
-#                     reached THROUGH the tunnel and (b) adds the resolved IPs to
-#                     the same set via `nftset=`. Needs dnsmasq-full.
+# Supports routing GROUPS: the default tunnel routes settings.community_lists into
+# the main set; each `config group` routes its own community_lists into its OWN set
+# (mierukop_<group>) so that list goes through that group's dedicated tunnel.
 #
-# Usage: update-lists.sh [download|apply]
-#   download — fetch all enabled community + custom lists, then apply
-#   apply    — (re)load cached subnet lists + user statics into the set
+# Usage: update-lists.sh [download|apply|available]
 
 CONF="mierukop"
 NFT_TABLE="inet mierukop"
 NFT_SET="mierukop_subnets"
 CACHE="/etc/mierukop/lists"
-# OpenWrt's dnsmasq loads an instance-specific conf-dir (/tmp/dnsmasq.<cfg>.d),
-# NOT /tmp/dnsmasq.d — detect the real one so our drop-in is actually read.
 dnsmasq_confdir() {
-	local d
-	d=$(ls -d /tmp/dnsmasq.*.d 2>/dev/null | head -1)
-	[ -n "$d" ] && [ -d "$d" ] && { echo "$d"; return; }
-	echo "/tmp/dnsmasq.d"
+	local d; d=$(ls -d /tmp/dnsmasq.*.d 2>/dev/null | head -1)
+	[ -n "$d" ] && [ -d "$d" ] && { echo "$d"; return; }; echo "/tmp/dnsmasq.d"
 }
 DNSMASQ_CONF="$(dnsmasq_confdir)/mierukop-domains.conf"
 REPO="https://raw.githubusercontent.com/itdoginfo/allow-domains/main"
 SOCKS_PORT="$(uci -q get $CONF.settings.socks_port || echo 1180)"
 PROXY="socks5h://127.0.0.1:${SOCKS_PORT}"
-# real DNS used to resolve routed domains (reached through the tunnel, see below)
 ROUTED_DNS="$(uci -q get $CONF.settings.routed_dns || echo 8.8.8.8)"
 
 . /lib/functions.sh
 log() { logger -t mierukop-lists "$1"; }
 
-# ── community registry: name → "kind:repo-relative-path" (one or more) ──
-# kind = subnet | domain
 community_entries() {
 	case "$1" in
 		telegram)   echo "subnet:Subnets/IPv4/telegram.lst"; echo "domain:Services/telegram.lst" ;;
@@ -61,140 +49,129 @@ community_entries() {
 		*) return 1 ;;
 	esac
 }
-
 available_lists() {
 	echo "telegram meta twitter discord cloudflare hetzner digitalocean roblox \
 youtube tiktok google_ai google_play hdrezka russia_inside russia_outside anime news porn geoblock block"
 }
 
 dl() { curl -fs --max-time 60 --proxy "$PROXY" -o "$2" "$1" 2>/dev/null; }
-
-# only allow IPv4/CIDR characters — rejects malformed or hostile list lines so a
-# crafted entry can't smuggle extra tokens into the nft command.
 is_cidr() { case "$1" in ''|*[!0-9./]*) return 1 ;; *) return 0 ;; esac; }
-add_subnet() { is_cidr "$1" || return 0; nft add element $NFT_TABLE $NFT_SET "{ $1 }" 2>/dev/null; }
-
-# True only when dnsmasq is actually COMPILED with nftset (dnsmasq-full).
-# --help lists the option even on plain dnsmasq, but using it then crashes the
-# daemon ("recompile with HAVE_NFTSET"). The compile-time options in --version
-# carry the exact token "nftset" (vs "no-nftset") — match it as a whole word.
+add_to() { is_cidr "$2" || return 0; nft add element $NFT_TABLE "$1" "{ $2 }" 2>/dev/null; }
 dnsmasq_full() { dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'nftset'; }
 
-# Download one community-list name into the cache (subnet files + domain files)
-download_name() {
-	local name="$1" line kind path out
-	community_entries "$name" | while IFS=: read -r kind path; do
-		[ -n "$path" ] || continue
-		out="$CACHE/${name}.${kind}.lst"
-		if dl "$REPO/$path" "$out.tmp" && [ -s "$out.tmp" ]; then
-			mv "$out.tmp" "$out"
-			log "downloaded $name/$kind ($(grep -c . "$out") lines)"
-		else
-			rm -f "$out.tmp"
-			log "download failed: $name/$kind (keeping cache)"
-		fi
-	done
-}
-
-# Build the dnsmasq domain drop-in from all cached *.domain.lst files
-build_domain_dnsmasq() {
-	dnsmasq_full || { log "dnsmasq-full required for domain lists — skipping (subnets still work)"; rm -f "$DNSMASQ_CONF"; return 0; }
-	mkdir -p "$(dirname "$DNSMASQ_CONF")"
-	: > "$DNSMASQ_CONF"
-	local nset="4#${NFT_TABLE##* }#${NFT_TABLE%% *}#${NFT_SET}"   # 4#mierukop#inet#mierukop_subnets → reorder below
-	# correct nftset target: 4#<family>#<table>#<set>  (family=inet, table=mierukop)
-	nset="inet#mierukop#${NFT_SET}"
-	local n=0
-	for f in "$CACHE"/*.domain.lst; do
-		[ -f "$f" ] || continue
-		while read -r d; do
-			case "$d" in ""|"#"*|"."*) continue ;; esac
-			# resolve routed domain via real DNS (reached through the tunnel) + add IPs to set
-			echo "server=/$d/$ROUTED_DNS"
-			echo "nftset=/$d/$nset"
-			n=$((n+1))
-		done < "$f"
-	done >> "$DNSMASQ_CONF"
-	# user domains from uci (routed) + exclusions (direct)
-	config_load "$CONF"
-	config_list_foreach user domain _emit_user_domain
-	config_list_foreach user exclude_domain _emit_direct_domain
-	log "domain dnsmasq: $n community domains"
-	[ -s "$DNSMASQ_CONF" ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1
-}
-_emit_user_domain() {
-	echo "server=/$1/$ROUTED_DNS" >> "$DNSMASQ_CONF"
-	echo "nftset=/$1/inet#mierukop#${NFT_SET}" >> "$DNSMASQ_CONF"
-}
-_emit_direct_domain() {
-	# resolved IPs go to the DIRECT set → bypass tunnel via the `return` rule
-	echo "server=/$1/$ROUTED_DNS" >> "$DNSMASQ_CONF"
-	echo "nftset=/$1/inet#mierukop#mierukop_direct" >> "$DNSMASQ_CONF"
-}
-
-# Load cached subnet lists + user statics into the nft set
-# Google/YouTube ride a huge dynamic CDN (googlevideo.com) — per-domain A-record
-# capture via nftset misses most of it, so route Google's published netblocks
-# wholesale whenever a Google-backed list is enabled. Keeps YouTube reliable.
 GOOGLE_SUBNETS="64.233.160.0/19 66.102.0.0/20 66.249.64.0/19 72.14.192.0/18 \
 74.125.0.0/16 108.177.0.0/17 142.250.0.0/15 172.217.0.0/16 173.194.0.0/16 \
 209.85.128.0/17 216.58.192.0/19 216.239.32.0/19"
 
-load_subnets() {
-	mkdir -p "$CACHE"
-	local n=0 net
-	for f in "$CACHE"/*.subnet.lst; do
-		[ -f "$f" ] || continue
-		while read -r net; do
-			case "$net" in ""|"#"*) continue ;; esac
-			add_subnet "$net" && n=$((n+1))
+# ── tunnel enumeration (mirrors init.d) ──
+group_list() { uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=group$/\1/p"; }
+tunnels() {
+	echo "0|default|"; local i=0 g
+	for g in $(group_list); do
+		[ "$(uci -q get $CONF.$g.enabled)" = "0" ] && continue
+		i=$((i+1)); echo "$i|group|$g"
+	done
+}
+t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "mierukop_$3"; }
+t_lists() { [ "$1" = default ] && uci -q get $CONF.settings.community_lists || uci -q get $CONF.$2.community_lists; }
+t_domains() { [ "$1" = default ] && uci -q get $CONF.user.domain || uci -q get $CONF.$2.domain; }
+t_subnets() { [ "$1" = default ] && uci -q get $CONF.user.subnet || uci -q get $CONF.$2.subnet; }
+
+# all community names across default + every group (deduped)
+all_names() {
+	{ local line kind g; for line in $(tunnels); do
+		kind=$(echo "$line"|cut -d'|' -f2); g=$(echo "$line"|cut -d'|' -f3)
+		t_lists "$kind" "$g"; echo
+	done; } | tr ' ' '\n' | sed '/^$/d' | sort -u
+}
+
+download_name() {
+	local name="$1" kind path out
+	community_entries "$name" | while IFS=: read -r kind path; do
+		[ -n "$path" ] || continue
+		out="$CACHE/${name}.${kind}.lst"
+		if dl "$REPO/$path" "$out.tmp" && [ -s "$out.tmp" ]; then
+			mv "$out.tmp" "$out"; log "downloaded $name/$kind ($(grep -c . "$out") lines)"
+		else rm -f "$out.tmp"; log "download failed: $name/$kind (keeping cache)"; fi
+	done
+}
+
+# load one tunnel's subnets into its set
+load_tunnel_subnets() {  # setname names kind g
+	local setname="$1" names="$2" kind="$3" g="$4" name net f
+	for name in $names; do
+		f="$CACHE/$name.subnet.lst"; [ -f "$f" ] || continue
+		while read -r net; do case "$net" in ""|"#"*) continue ;; esac; add_to "$setname" "$net"; done < "$f"
+	done
+	case " $names " in *" youtube "*|*" google_ai "*|*" google_play "*)
+		for net in $GOOGLE_SUBNETS; do add_to "$setname" "$net"; done ;; esac
+	for net in $(t_subnets "$kind" "$g"); do add_to "$setname" "$net"; done
+}
+
+# append one tunnel's domain rules (resolve via tunneled DNS, add IPs to its set)
+emit_tunnel_domains() {  # setname names kind g  (stdout)
+	local setname="$1" names="$2" kind="$3" g="$4" name f d
+	for name in $names; do
+		f="$CACHE/$name.domain.lst"; [ -f "$f" ] || continue
+		while read -r d; do case "$d" in ""|"#"*|"."*) continue ;; esac
+			echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/inet#mierukop#$setname"
 		done < "$f"
 	done
-	# built-in Google ranges if any Google-backed list is on
-	case " $(uci -q get $CONF.settings.community_lists) " in
-		*" youtube "*|*" google_ai "*|*" google_play "*)
-			for net in $GOOGLE_SUBNETS; do add_subnet "$net" && n=$((n+1)); done ;;
-	esac
-	config_load "$CONF"
-	config_list_foreach user subnet _add_user_subnet
-	# exclusions → DIRECT set (a `return` rule bypasses the tunnel for these)
-	config_list_foreach user exclude_subnet _add_direct_subnet
-	# DNS servers used for routed domains must themselves go through the tunnel
-	for dns in $ROUTED_DNS; do add_subnet "$dns/32"; done
-	log "loaded $n subnets into set (+routed DNS $ROUTED_DNS)"
+	for d in $(t_domains "$kind" "$g"); do
+		echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/inet#mierukop#$setname"
+	done
 }
-_add_user_subnet() { add_subnet "$1"; }
-_add_direct_subnet() { is_cidr "$1" || return 0; nft add element $NFT_TABLE mierukop_direct "{ $1 }" 2>/dev/null; }
 
-# legacy custom list_source sections (arbitrary subnet URLs)
+apply_all() {
+	mkdir -p "$CACHE"
+	local line idx kind g setname names total=0
+	# subnets per tunnel
+	for line in $(tunnels); do
+		idx=${line%%|*}; kind=$(echo "$line"|cut -d'|' -f2); g=$(echo "$line"|cut -d'|' -f3)
+		setname=$(t_set "$idx" "$kind" "$g"); names=$(t_lists "$kind" "$g")
+		load_tunnel_subnets "$setname" "$names" "$kind" "$g"
+	done
+	# default user exclusions → DIRECT set (bypass), routed DNS → default set
+	for net in $(uci -q get $CONF.user.exclude_subnet); do add_to mierukop_direct "$net"; done
+	for dns in $ROUTED_DNS; do add_to "$NFT_SET" "$dns/32"; done
+	# domain drop-in (all tunnels)
+	if dnsmasq_full; then
+		mkdir -p "$(dirname "$DNSMASQ_CONF")"; : > "$DNSMASQ_CONF"
+		for line in $(tunnels); do
+			idx=${line%%|*}; kind=$(echo "$line"|cut -d'|' -f2); g=$(echo "$line"|cut -d'|' -f3)
+			setname=$(t_set "$idx" "$kind" "$g"); names=$(t_lists "$kind" "$g")
+			emit_tunnel_domains "$setname" "$names" "$kind" "$g" >> "$DNSMASQ_CONF"
+		done
+		# default user exclusions → direct set
+		for d in $(uci -q get $CONF.user.exclude_domain); do
+			echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/inet#mierukop#mierukop_direct"
+		done >> "$DNSMASQ_CONF"
+		total=$(grep -c '^nftset=' "$DNSMASQ_CONF" 2>/dev/null)
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+		log "domain drop-in: $total entries across $(tunnels|wc -l) tunnel(s)"
+	else
+		log "dnsmasq-full required for domain lists — skipping (subnets still work)"; rm -f "$DNSMASQ_CONF"
+	fi
+	log "apply done: $(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9.]+/[0-9]+' | wc -l) subnets in default set"
+}
+
 download_custom() {
 	local section="$1" enabled url type
 	config_get_bool enabled "$section" enabled 1
-	config_get url "$section" url
-	config_get type "$section" type subnet
-	[ "$enabled" = "1" ] && [ -n "$url" ] || return 0
-	[ "$type" = "subnet" ] || return 0
-	dl "$url" "$CACHE/custom_${section}.subnet.lst.tmp" && \
-		mv "$CACHE/custom_${section}.subnet.lst.tmp" "$CACHE/custom_${section}.subnet.lst"
+	config_get url "$section" url; config_get type "$section" type subnet
+	[ "$enabled" = "1" ] && [ -n "$url" ] && [ "$type" = "subnet" ] || return 0
+	dl "$url" "$CACHE/custom_${section}.subnet.lst.tmp" && mv "$CACHE/custom_${section}.subnet.lst.tmp" "$CACHE/custom_${section}.subnet.lst"
 }
 
 config_load "$CONF"
-COMMUNITY="$(uci -q get $CONF.settings.community_lists)"
 
 case "${1:-apply}" in
 	download)
 		mkdir -p "$CACHE"
-		for name in $COMMUNITY; do download_name "$name"; done
+		for name in $(all_names); do download_name "$name"; done
 		config_foreach download_custom list_source
-		load_subnets
-		build_domain_dnsmasq
-		;;
-	apply)
-		load_subnets
-		build_domain_dnsmasq
-		;;
-	available)
-		available_lists ;;
-	*)
-		echo "usage: $0 [download|apply|available]"; exit 1 ;;
+		apply_all ;;
+	apply)     apply_all ;;
+	available) available_lists ;;
+	*) echo "usage: $0 [download|apply|available]"; exit 1 ;;
 esac
