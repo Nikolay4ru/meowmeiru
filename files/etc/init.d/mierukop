@@ -31,12 +31,19 @@ table $NFT_TABLE {
 		flags interval
 		auto-merge
 	}
+	set mierukop_direct {
+		type ipv4_addr
+		flags interval
+		auto-merge
+	}
 	chain prerouting {
 		type filter hook prerouting priority mangle; policy accept;
+		ip daddr @mierukop_direct return
 		ip daddr @$NFT_SET meta mark set $mark
 	}
 	chain output {
 		type route hook output priority mangle; policy accept;
+		ip daddr @mierukop_direct return
 		ip daddr @$NFT_SET meta mark set $mark
 	}
 	chain forward {
@@ -54,6 +61,16 @@ EOF
 
 teardown_nft() {
 	nft delete table $NFT_TABLE 2>/dev/null
+}
+
+setup_cron() {
+	local cron="/etc/crontabs/root" iv
+	touch "$cron"
+	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d' "$cron"
+	[ "$(uci_get watchdog)" = "1" ] && echo "*/5 * * * * /etc/mierukop/watchdog.sh" >> "$cron"
+	iv=$(uci_get update_interval)
+	[ -n "$iv" ] && [ "$iv" != "0" ] && echo "23 5 */$(( iv/24>0 ? iv/24 : 1 )) * * /etc/mierukop/update-lists.sh download" >> "$cron"
+	/etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1
 }
 
 setup_route() {
@@ -182,6 +199,15 @@ start_service() {
 	procd_set_param respawn 3600 5 0
 	procd_close_instance
 
+	# kill-switch: blackhole fallback so routed traffic is dropped (not leaked direct)
+	# whenever the tun route is gone. Lower priority than the tun default route.
+	if [ "$(uci_get killswitch)" = "1" ]; then
+		ip route add blackhole default table "$table" metric 100 2>/dev/null
+	fi
+
+	# install/refresh helper cron (watchdog + periodic list refresh)
+	setup_cron
+
 	# load subnet lists into the set after services come up
 	( sleep 6
 	  /etc/mierukop/update-lists.sh apply
@@ -196,6 +222,7 @@ stop_service() {
 	teardown_nft
 	ip link del "$(uci_get tun_name)" 2>/dev/null
 	rm -f "$DNSMASQ_CONF" /tmp/dnsmasq.d/mierukop-domains.conf /tmp/dnsmasq.*.d/mierukop-domains.conf 2>/dev/null
+	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d' /etc/crontabs/root 2>/dev/null
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	log "stopped"
 }

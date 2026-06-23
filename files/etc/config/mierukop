@@ -15,8 +15,12 @@ config mierukop 'settings'
 	option tun_addr '198.18.0.1'
 	option fwmark '0x1042'
 	option route_table '1042'
-	# how often to refresh subnet/domain lists (hours)
+	# how often to refresh subnet/domain lists (hours; 0 = never)
 	option update_interval '24'
+	# watchdog: restart the tunnel automatically if it stops passing traffic
+	option watchdog '1'
+	# kill-switch: drop routed traffic if the tunnel is down (no direct leak)
+	option killswitch '0'
 	# real DNS used to resolve routed domains (reached THROUGH the tunnel)
 	option routed_dns '8.8.8.8'
 	# community lists from itdoginfo/allow-domains (space-separated). Run:
@@ -37,7 +41,11 @@ config mierukop 'settings'
 # User policy: extra domains (resolved IPs auto-added via dnsmasq) + static subnets
 # routed through the tunnel. One section named 'user' holding both list types.
 config policy 'user'
+	# routed through the tunnel
 	list domain 'telegram.org'
 	list domain 'telegra.ph'
 	list domain 't.me'
 	# list subnet '149.154.160.0/20'
+	# excluded — always go DIRECT, even if matched by a community list
+	# list exclude_domain 'sberbank.ru'
+	# list exclude_subnet '192.168.0.0/16'

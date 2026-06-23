@@ -98,6 +98,7 @@ fetch_file() { # fetch_file <repo-path> <dest> <mode>
 [ -f /etc/config/mierukop ] || fetch_file etc/config/mierukop /etc/config/mierukop 644
 fetch_file etc/init.d/mierukop         /etc/init.d/mierukop          755
 fetch_file etc/mierukop/update-lists.sh /etc/mierukop/update-lists.sh 755
+fetch_file etc/mierukop/watchdog.sh    /etc/mierukop/watchdog.sh     755
 fetch_file usr/bin/mierukop            /usr/bin/mierukop             755
 mkdir -p /etc/mierukop/lists
 

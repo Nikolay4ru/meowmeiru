@@ -129,34 +129,55 @@ return view.extend({
 	render: function () {
 		var self = this, m, s, o;
 
-		// ── settings form (handles save/apply) ──
+		// ── settings form (tabbed; handles save/apply) ──
 		m = new form.Map('mierukop', '', '');
 
-		s = m.section(form.NamedSection, 'settings', 'mierukop', _('Connection'));
-		s.anonymous = false;
-		o = s.option(form.Flag, 'enabled', _('Enabled')); o.rmempty = false;
-		o = s.option(form.Value, 'server', _('Server IP')); o.datatype = 'host';
-		o = s.option(form.Value, 'port', _('Port')); o.datatype = 'port';
-		o = s.option(form.ListValue, 'protocol', _('Protocol')); o.value('TCP'); o.value('UDP');
-		o = s.option(form.Value, 'username', _('Username'));
-		o = s.option(form.Value, 'password', _('Password')); o.password = true;
-		o = s.option(form.Value, 'routed_dns', _('Resolver for routed domains'),
-			_('Real DNS used to resolve routed domains (tunneled, bypasses DPI/fake-IP).'));
-		o.datatype = 'ipaddr'; o.placeholder = '8.8.8.8'; o.optional = true;
-		o = s.option(form.Value, 'socks_port', _('Local SOCKS5 port')); o.datatype = 'port'; o.optional = true;
+		s = m.section(form.NamedSection, 'settings', 'mierukop');
+		s.anonymous = true; s.addremove = false;
+		s.tab('conn',  _('Connection'));
+		s.tab('lists', _('Routing'));
+		s.tab('adv',   _('Advanced'));
 
-		s = m.section(form.NamedSection, 'settings', 'mierukop', _('Community lists'),
+		// — Connection —
+		o = s.taboption('conn', form.Flag, 'enabled', _('Enabled')); o.rmempty = false;
+		o = s.taboption('conn', form.Value, 'server', _('Server IP')); o.datatype = 'host';
+		o = s.taboption('conn', form.Value, 'port', _('Port')); o.datatype = 'port';
+		o = s.taboption('conn', form.ListValue, 'protocol', _('Protocol')); o.value('TCP'); o.value('UDP');
+		o = s.taboption('conn', form.Value, 'username', _('Username'));
+		o = s.taboption('conn', form.Value, 'password', _('Password')); o.password = true;
+
+		// — Routing (community lists + resolver) —
+		o = s.taboption('lists', form.MultiValue, 'community_lists', _('Community lists'),
 			_('Services routed through the tunnel (itdoginfo/allow-domains). Press “Update lists” after changing.'));
-		o = s.option(form.MultiValue, 'community_lists', _('Lists'));
-		o.display_size = 12;
+		o.display_size = 14;
 		['telegram','meta','twitter','discord','roblox','cloudflare','hetzner','digitalocean',
 		 'youtube','tiktok','google_ai','google_play','hdrezka',
 		 'russia_outside','anime','news','porn','geoblock','block'].forEach(function (n) { o.value(n, n); });
 		o.rmempty = true;
+		o = s.taboption('lists', form.Value, 'routed_dns', _('Resolver for routed domains'),
+			_('Real DNS used to resolve routed domains (tunneled, bypasses DPI/fake-IP).'));
+		o.datatype = 'ipaddr'; o.placeholder = '8.8.8.8'; o.optional = true;
 
-		s = m.section(form.NamedSection, 'user', 'policy', _('Custom domains & subnets'));
-		o = s.option(form.DynamicList, 'domain', _('Domain')); o.placeholder = 'example.com';
-		o = s.option(form.DynamicList, 'subnet', _('Subnet (CIDR)')); o.datatype = 'cidr4'; o.placeholder = '203.0.113.0/24';
+		// — Advanced —
+		o = s.taboption('adv', form.Flag, 'watchdog', _('Watchdog'),
+			_('Auto-restart the tunnel if it stops passing traffic (checked every 5 min).'));
+		o = s.taboption('adv', form.Flag, 'killswitch', _('Kill-switch'),
+			_('Drop routed traffic if the tunnel is down, instead of leaking it directly.'));
+		o = s.taboption('adv', form.Value, 'update_interval', _('List refresh (hours)'),
+			_('How often to re-download community lists. 0 = never.'));
+		o.datatype = 'uinteger'; o.placeholder = '24';
+		o = s.taboption('adv', form.Value, 'socks_port', _('Local SOCKS5 port')); o.datatype = 'port'; o.optional = true;
+		o = s.taboption('adv', form.Value, 'tun_name', _('Tunnel interface')); o.optional = true; o.placeholder = 'mtun0';
+
+		// ── custom rules (tabbed: routed / excluded) ──
+		s = m.section(form.NamedSection, 'user', 'policy', _('Custom rules'));
+		s.anonymous = true; s.addremove = false;
+		s.tab('routed',   _('Routed (via tunnel)'));
+		s.tab('excluded', _('Excluded (direct)'));
+		o = s.taboption('routed', form.DynamicList, 'domain', _('Domain')); o.placeholder = 'example.com';
+		o = s.taboption('routed', form.DynamicList, 'subnet', _('Subnet (CIDR)')); o.datatype = 'cidr4'; o.placeholder = '203.0.113.0/24';
+		o = s.taboption('excluded', form.DynamicList, 'exclude_domain', _('Domain (always direct)')); o.placeholder = 'sberbank.ru';
+		o = s.taboption('excluded', form.DynamicList, 'exclude_subnet', _('Subnet (always direct)')); o.datatype = 'cidr4'; o.placeholder = '192.168.0.0/16';
 
 		return m.render().then(function (formNode) {
 			var out = E('div', { 'class': 'mk-out', style: 'display:none' });

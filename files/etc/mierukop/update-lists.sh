@@ -111,16 +111,21 @@ build_domain_dnsmasq() {
 			n=$((n+1))
 		done < "$f"
 	done >> "$DNSMASQ_CONF"
-	# user domains from uci
+	# user domains from uci (routed) + exclusions (direct)
 	config_load "$CONF"
 	config_list_foreach user domain _emit_user_domain
+	config_list_foreach user exclude_domain _emit_direct_domain
 	log "domain dnsmasq: $n community domains"
 	[ -s "$DNSMASQ_CONF" ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1
 }
 _emit_user_domain() {
-	local nset="inet#mierukop#${NFT_SET}"
 	echo "server=/$1/$ROUTED_DNS" >> "$DNSMASQ_CONF"
-	echo "nftset=/$1/$nset" >> "$DNSMASQ_CONF"
+	echo "nftset=/$1/inet#mierukop#${NFT_SET}" >> "$DNSMASQ_CONF"
+}
+_emit_direct_domain() {
+	# resolved IPs go to the DIRECT set → bypass tunnel via the `return` rule
+	echo "server=/$1/$ROUTED_DNS" >> "$DNSMASQ_CONF"
+	echo "nftset=/$1/inet#mierukop#mierukop_direct" >> "$DNSMASQ_CONF"
 }
 
 # Load cached subnet lists + user statics into the nft set
@@ -136,11 +141,14 @@ load_subnets() {
 	done
 	config_load "$CONF"
 	config_list_foreach user subnet _add_user_subnet
+	# exclusions → DIRECT set (a `return` rule bypasses the tunnel for these)
+	config_list_foreach user exclude_subnet _add_direct_subnet
 	# DNS servers used for routed domains must themselves go through the tunnel
 	for dns in $ROUTED_DNS; do add_subnet "$dns/32"; done
 	log "loaded $n subnets into set (+routed DNS $ROUTED_DNS)"
 }
 _add_user_subnet() { add_subnet "$1"; }
+_add_direct_subnet() { nft add element $NFT_TABLE mierukop_direct "{ $1 }" 2>/dev/null; }
 
 # legacy custom list_source sections (arbitrary subnet URLs)
 download_custom() {
