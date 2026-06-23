@@ -83,6 +83,32 @@ teardown_nft() {
 	nft delete table $NFT_TABLE 2>/dev/null
 }
 
+# fw4 has `policy drop` on the forward hook and runs AFTER our own chain, so an
+# `accept` in the mierukop table does NOT stop fw4 from rejecting forwarded LAN
+# clients heading into the tun (the tun is in no firewall zone). The fix is to
+# put the tun device in the `lan` zone so fw4 itself permits LAN<->tun forwarding.
+setup_fw_zone() {
+	local tun="$1" z
+	z=$(uci show firewall 2>/dev/null | awk -F'[.=]' "/\\.name='lan'\$/{print \$2; exit}")
+	[ -n "$z" ] || return 0
+	# idempotent: only touch config + reload fw4 if the device isn't there yet
+	if ! uci -q get "firewall.$z.device" | tr ' ' '\n' | grep -qx "$tun"; then
+		uci add_list "firewall.$z.device=$tun"
+		uci commit firewall
+		fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1
+	fi
+}
+teardown_fw_zone() {
+	local tun="$1" z
+	z=$(uci show firewall 2>/dev/null | awk -F'[.=]' "/\\.name='lan'\$/{print \$2; exit}")
+	[ -n "$z" ] || return 0
+	if uci -q get "firewall.$z.device" | tr ' ' '\n' | grep -qx "$tun"; then
+		uci -q del_list "firewall.$z.device=$tun"
+		uci commit firewall
+		fw4 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1
+	fi
+}
+
 setup_cron() {
 	local cron="/etc/crontabs/root" iv
 	touch "$cron"
@@ -199,6 +225,7 @@ start_service() {
 	write_mieru_conf
 	write_hev_conf
 	setup_nft "$NFT_SET" "$mark"
+	setup_fw_zone "$tun"   # let fw4 permit forwarded LAN clients into the tun
 	# domain dnsmasq drop-in (community + user domains) is built by update-lists.sh apply below
 
 	# mieru stores its config in its own state dir; apply BEFORE running.
@@ -240,6 +267,7 @@ stop_service() {
 	mark=$(uci_get fwmark); table=$(uci_get route_table)
 	teardown_route "$mark" "$table"
 	teardown_nft
+	teardown_fw_zone "$(uci_get tun_name)"
 	ip link del "$(uci_get tun_name)" 2>/dev/null
 	rm -f "$DNSMASQ_CONF" /tmp/dnsmasq.d/mierukop-domains.conf /tmp/dnsmasq.*.d/mierukop-domains.conf 2>/dev/null
 	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d' /etc/crontabs/root 2>/dev/null
