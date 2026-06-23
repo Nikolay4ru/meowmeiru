@@ -129,6 +129,13 @@ _emit_direct_domain() {
 }
 
 # Load cached subnet lists + user statics into the nft set
+# Google/YouTube ride a huge dynamic CDN (googlevideo.com) — per-domain A-record
+# capture via nftset misses most of it, so route Google's published netblocks
+# wholesale whenever a Google-backed list is enabled. Keeps YouTube reliable.
+GOOGLE_SUBNETS="64.233.160.0/19 66.102.0.0/20 66.249.64.0/19 72.14.192.0/18 \
+74.125.0.0/16 108.177.0.0/17 142.250.0.0/15 172.217.0.0/16 173.194.0.0/16 \
+209.85.128.0/17 216.58.192.0/19 216.239.32.0/19"
+
 load_subnets() {
 	mkdir -p "$CACHE"
 	local n=0 net
@@ -139,6 +146,11 @@ load_subnets() {
 			add_subnet "$net" && n=$((n+1))
 		done < "$f"
 	done
+	# built-in Google ranges if any Google-backed list is on
+	case " $(uci -q get $CONF.settings.community_lists) " in
+		*" youtube "*|*" google_ai "*|*" google_play "*)
+			for net in $GOOGLE_SUBNETS; do add_subnet "$net" && n=$((n+1)); done ;;
+	esac
 	config_load "$CONF"
 	config_list_foreach user subnet _add_user_subnet
 	# exclusions → DIRECT set (a `return` rule bypasses the tunnel for these)
