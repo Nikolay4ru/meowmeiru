@@ -40,12 +40,21 @@ dl() { # dl <url> <out>
 # ── dependencies ──
 say "installing deps (nftables, dnsmasq-full, kmod-tun, ca-bundle, curl)…"
 opkg update >/dev/null 2>&1 || true
-# dnsmasq-full needed for nftset= domain routing; replace dnsmasq if present
-if opkg list-installed 2>/dev/null | grep -q '^dnsmasq '; then
-	opkg install dnsmasq-full --download-only >/dev/null 2>&1 && {
-		opkg remove dnsmasq >/dev/null 2>&1
-		opkg install dnsmasq-full >/dev/null 2>&1 || true
-	}
+# dnsmasq-full needed for nftset= domain routing; replace plain dnsmasq.
+# Removing dnsmasq kills DNS → opkg can't resolve the mirror, so pin a temp
+# resolver first and fall back to plain dnsmasq if -full won't install.
+if dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'no-nftset'; then
+	say "swapping dnsmasq -> dnsmasq-full (needed for domain lists)..."
+	echo "nameserver 8.8.8.8" > /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null || true
+	opkg update >/dev/null 2>&1 || true
+	opkg install dnsmasq-full --download-only --force-overwrite >/dev/null 2>&1 || true
+	cp /etc/config/dhcp /etc/config/dhcp.mierukop.bak 2>/dev/null
+	opkg remove dnsmasq >/dev/null 2>&1
+	opkg install dnsmasq-full --force-overwrite >/dev/null 2>&1 || \
+		opkg install dnsmasq --force-overwrite >/dev/null 2>&1
+	[ -s /etc/config/dhcp ] || cp /etc/config/dhcp.mierukop.bak /etc/config/dhcp 2>/dev/null
+	/etc/init.d/dnsmasq enable >/dev/null 2>&1
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 fi
 # ip-full (iproute2) is REQUIRED — busybox `ip` cannot do `ip rule` / routing tables / tuntap
 opkg install kmod-tun nftables curl ca-bundle ip-full >/dev/null 2>&1 || true

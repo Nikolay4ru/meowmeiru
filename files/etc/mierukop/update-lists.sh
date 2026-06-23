@@ -70,7 +70,11 @@ dl() { curl -fs --max-time 60 --proxy "$PROXY" -o "$2" "$1" 2>/dev/null; }
 
 add_subnet() { nft add element $NFT_TABLE $NFT_SET "{ $1 }" 2>/dev/null; }
 
-dnsmasq_full() { dnsmasq --help 2>&1 | grep -q -- '--nftset'; }
+# True only when dnsmasq is actually COMPILED with nftset (dnsmasq-full).
+# --help lists the option even on plain dnsmasq, but using it then crashes the
+# daemon ("recompile with HAVE_NFTSET"). The compile-time options in --version
+# carry the exact token "nftset" (vs "no-nftset") — match it as a whole word.
+dnsmasq_full() { dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'nftset'; }
 
 # Download one community-list name into the cache (subnet files + domain files)
 download_name() {
@@ -95,7 +99,7 @@ build_domain_dnsmasq() {
 	: > "$DNSMASQ_CONF"
 	local nset="4#${NFT_TABLE##* }#${NFT_TABLE%% *}#${NFT_SET}"   # 4#mierukop#inet#mierukop_subnets → reorder below
 	# correct nftset target: 4#<family>#<table>#<set>  (family=inet, table=mierukop)
-	nset="4#inet#mierukop#${NFT_SET}"
+	nset="inet#mierukop#${NFT_SET}"
 	local n=0
 	for f in "$CACHE"/*.domain.lst; do
 		[ -f "$f" ] || continue
@@ -114,7 +118,7 @@ build_domain_dnsmasq() {
 	[ -s "$DNSMASQ_CONF" ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1
 }
 _emit_user_domain() {
-	local nset="4#inet#mierukop#${NFT_SET}"
+	local nset="inet#mierukop#${NFT_SET}"
 	echo "server=/$1/$ROUTED_DNS" >> "$DNSMASQ_CONF"
 	echo "nftset=/$1/$nset" >> "$DNSMASQ_CONF"
 }
