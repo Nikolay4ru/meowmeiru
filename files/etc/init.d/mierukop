@@ -48,6 +48,10 @@ table $NFT_TABLE {
 	}
 	chain forward {
 		type filter hook forward priority -1; policy accept;
+		# clamp MSS so forwarded clients don't black-hole large TLS segments
+		# through the tunnel (non-terminal — falls through to accept below)
+		oifname "$tun" tcp flags syn tcp option maxseg size set 1360
+		iifname "$tun" tcp flags syn tcp option maxseg size set 1360
 		oifname "$tun" accept
 		iifname "$tun" accept
 	}
