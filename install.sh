@@ -102,6 +102,46 @@ fetch_file etc/mierukop/watchdog.sh    /etc/mierukop/watchdog.sh     755
 fetch_file usr/bin/mierukop            /usr/bin/mierukop             755
 mkdir -p /etc/mierukop/lists
 
+# ── register with opkg so it shows in the LuCI package manager (removable/upgradeable) ──
+say "registering package with opkg…"
+PKG_VER="${PKG_VER:-1.0.0}"
+INFO=/usr/lib/opkg/info; STATUS=/usr/lib/opkg/status; mkdir -p "$INFO"
+PKG_FILES="/etc/config/mierukop /etc/init.d/mierukop /etc/mierukop/update-lists.sh \
+/etc/mierukop/watchdog.sh /usr/bin/mierukop /www/luci-static/resources/view/mierukop/main.js \
+/usr/share/luci/menu.d/luci-app-mierukop.json /usr/share/rpcd/acl.d/luci-app-mierukop.json"
+: > "$INFO/mierukop.list"; PKG_SZ=0
+for f in $PKG_FILES; do [ -e "$f" ] && { echo "$f" >> "$INFO/mierukop.list"; PKG_SZ=$((PKG_SZ+$(wc -c <"$f"))); }; done
+echo "/etc/config/mierukop" > "$INFO/mierukop.conffiles"
+# stop + tear down cleanly when removed via the package manager
+cat > "$INFO/mierukop.prerm" <<'PRERM'
+#!/bin/sh
+/etc/init.d/mierukop stop 2>/dev/null
+/etc/init.d/mierukop disable 2>/dev/null
+exit 0
+PRERM
+chmod +x "$INFO/mierukop.prerm"
+cat > "$INFO/mierukop.control" <<CTL
+Package: mierukop
+Version: $PKG_VER
+Depends: nftables, dnsmasq-full, kmod-tun, ip-full, curl, ca-bundle
+Section: net
+Architecture: all
+Installed-Size: $PKG_SZ
+Description: Selective routing over a mieru SOCKS5 tunnel (podkop-style) with LuCI app
+CTL
+if grep -q "^Package: mierukop\$" "$STATUS" 2>/dev/null; then
+	awk 'BEGIN{RS="";ORS="\n\n"} !/^Package: mierukop\n/' "$STATUS" > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+fi
+cat >> "$STATUS" <<STAT
+Package: mierukop
+Version: $PKG_VER
+Depends: nftables, dnsmasq-full, kmod-tun, ip-full, curl, ca-bundle
+Status: install user installed
+Architecture: all
+Installed-Time: $(date +%s)
+
+STAT
+
 # ── cron: refresh lists daily ──
 CRON="/etc/crontabs/root"; touch "$CRON"
 grep -q 'mierukop/update-lists.sh download' "$CRON" || \
