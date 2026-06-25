@@ -189,19 +189,28 @@ case "$1" in
 			"files/etc/mierukop/update-lists.sh:ul" \
 			"files/etc/mierukop/watchdog.sh:wd" \
 			"files/usr/bin/mierukop:cli" \
-			"luci/htdocs/luci-static/resources/view/mierukop/main.js:js" \
+			"luci/htdocs/luci-static/resources/mierukop/lib.js:lib" \
+			"luci/htdocs/luci-static/resources/view/mierukop/overview.js:v_overview" \
+			"luci/htdocs/luci-static/resources/view/mierukop/servers.js:v_servers" \
+			"luci/htdocs/luci-static/resources/view/mierukop/routing.js:v_routing" \
+			"luci/htdocs/luci-static/resources/view/mierukop/diagnostics.js:v_diagnostics" \
+			"luci/htdocs/luci-static/resources/view/mierukop/settings.js:v_settings" \
 			"luci/root/usr/share/luci/menu.d/luci-app-mierukop.json:menu" \
 			"luci/root/usr/share/rpcd/acl.d/luci-app-mierukop.json:acl" \
 			"VERSION:ver"; do
 			repo_dl "${pair%%:*}" "$d/${pair##*:}" && [ -s "$d/${pair##*:}" ] || { echo "  download failed: ${pair%%:*}"; ok=0; }
 		done
-		# sanity: shell scripts must parse, JS/JSON non-empty
+		# sanity: shell scripts must parse, lib must look like our module
 		for f in initd ul wd cli; do sh -n "$d/$f" 2>/dev/null || { echo "  bad script: $f"; ok=0; }; done
-		grep -q "view.extend" "$d/js" 2>/dev/null || ok=0
+		grep -q "loadTunnels" "$d/lib" 2>/dev/null || ok=0
+		for v in v_overview v_servers v_routing v_diagnostics v_settings; do grep -q "view.extend" "$d/$v" 2>/dev/null || ok=0; done
 		[ "$ok" = 1 ] || { echo "update aborted (download/sanity failed) — current $VERSION kept"; rm -rf "$d"; exit 1; }
 		cp "$d/initd" /etc/init.d/mierukop; cp "$d/ul" /etc/mierukop/update-lists.sh
 		cp "$d/wd" /etc/mierukop/watchdog.sh; cp "$d/cli" /usr/bin/mierukop
-		cp "$d/js" /www/luci-static/resources/view/mierukop/main.js
+		mkdir -p /www/luci-static/resources/mierukop /www/luci-static/resources/view/mierukop
+		cp "$d/lib" /www/luci-static/resources/mierukop/lib.js
+		for v in overview servers routing diagnostics settings; do cp "$d/v_$v" "/www/luci-static/resources/view/mierukop/$v.js"; done
+		rm -f /www/luci-static/resources/view/mierukop/main.js
 		cp "$d/menu" /usr/share/luci/menu.d/luci-app-mierukop.json
 		cp "$d/acl" /usr/share/rpcd/acl.d/luci-app-mierukop.json
 		mkdir -p /etc/mierukop; cp "$d/ver" "$VER_FILE"

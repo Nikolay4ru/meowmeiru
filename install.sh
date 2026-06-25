@@ -118,6 +118,22 @@ fetch_file etc/mierukop/update-lists.sh /etc/mierukop/update-lists.sh 755
 fetch_file etc/mierukop/watchdog.sh    /etc/mierukop/watchdog.sh     755
 fetch_file usr/bin/mierukop            /usr/bin/mierukop             755
 ln -sf /usr/bin/mierukop /usr/bin/meowmieru   # meowMieru brand alias
+
+# LuCI app (multi-page): shared lib + per-tab views + menu + acl
+fetch_repo() { # fetch_repo <repo-path> <dest> <mode>
+	local p="$1" d="$2" m="$3"; mkdir -p "$(dirname "$d")"
+	if dl "$REPO/$p" "$d" 2>/dev/null && [ -s "$d" ]; then :;
+	elif [ -n "$MIRROR" ]; then dl "$MIRROR/$p" "$d"; fi
+	[ -n "$m" ] && chmod "$m" "$d"
+}
+LV=/www/luci-static/resources
+fetch_repo luci/htdocs/luci-static/resources/mierukop/lib.js  "$LV/mierukop/lib.js"  644
+for v in overview servers routing diagnostics settings; do
+	fetch_repo "luci/htdocs/luci-static/resources/view/mierukop/$v.js" "$LV/view/mierukop/$v.js" 644
+done
+rm -f "$LV/view/mierukop/main.js"   # legacy single-page view (replaced by tabs)
+fetch_repo luci/root/usr/share/luci/menu.d/luci-app-mierukop.json   /usr/share/luci/menu.d/luci-app-mierukop.json   644
+fetch_repo luci/root/usr/share/rpcd/acl.d/luci-app-mierukop.json    /usr/share/rpcd/acl.d/luci-app-mierukop.json    644
 # module version file (used by update-check / self-update)
 dl "$REPO/VERSION" /etc/mierukop/VERSION 2>/dev/null || echo "1.1.0" > /etc/mierukop/VERSION
 mkdir -p /etc/mierukop/lists
@@ -127,7 +143,13 @@ say "registering package with opkg…"
 PKG_VER="$(cat /etc/mierukop/VERSION 2>/dev/null || echo 1.1.0)"
 INFO=/usr/lib/opkg/info; STATUS=/usr/lib/opkg/status; mkdir -p "$INFO"
 PKG_FILES="/etc/config/mierukop /etc/init.d/mierukop /etc/mierukop/update-lists.sh \
-/etc/mierukop/watchdog.sh /usr/bin/mierukop /www/luci-static/resources/view/mierukop/main.js \
+/etc/mierukop/watchdog.sh /usr/bin/mierukop \
+/www/luci-static/resources/mierukop/lib.js \
+/www/luci-static/resources/view/mierukop/overview.js \
+/www/luci-static/resources/view/mierukop/servers.js \
+/www/luci-static/resources/view/mierukop/routing.js \
+/www/luci-static/resources/view/mierukop/diagnostics.js \
+/www/luci-static/resources/view/mierukop/settings.js \
 /usr/share/luci/menu.d/luci-app-mierukop.json /usr/share/rpcd/acl.d/luci-app-mierukop.json"
 : > "$INFO/mierukop.list"; PKG_SZ=0
 for f in $PKG_FILES; do [ -e "$f" ] && { echo "$f" >> "$INFO/mierukop.list"; PKG_SZ=$((PKG_SZ+$(wc -c <"$f"))); }; done
