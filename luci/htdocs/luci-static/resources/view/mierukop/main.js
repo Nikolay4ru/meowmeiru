@@ -38,7 +38,24 @@ return view.extend({
   buf: [],
   MAXPTS: 90,
 
-  load: function(){ return Promise.all([ uci.load('mierukop') ]); },
+  pingMap: {},
+  load: function(){
+    var self=this;
+    return Promise.all([
+      uci.load('mierukop'),
+      fs.exec('/usr/bin/mierukop',['pingcache']).catch(function(){ return {stdout:''}; })
+    ]).then(function(res){
+      self.pingMap={};
+      ((res[1]&&res[1].stdout)||'').trim().split('\n').forEach(function(l){
+        var f=l.split('|'); if(f[0]) self.pingMap[f[0]]=f[3]; });
+      return res;
+    });
+  },
+  // append cached latency to a server label for the dropdowns
+  srvLabel: function(sec, base){
+    var ms=this.pingMap[sec];
+    return base + (ms && ms!=='—' ? ' · '+ms+'ms' : '');
+  },
 
   parse: function(t){ var o={}; (t||'').split('\n').forEach(function(l){
     var i=l.indexOf(':'); if(i>0) o[l.slice(0,i).trim()]=l.slice(i+1).trim(); }); return o; },
@@ -143,7 +160,7 @@ return view.extend({
     o=s.taboption('conn',form.ListValue,'active_server',_('Активный сервер'),
       _('Какой сервер ниже пропускает трафик. Учётные данные задаются в разделе «Серверы».'));
     uci.sections('mierukop','server').forEach(function(sv){
-      o.value(sv['.name'], (sv.label||sv['.name'])+' — '+(sv.address||'')+':'+(sv.port||''));
+      o.value(sv['.name'], self.srvLabel(sv['.name'], (sv.label||sv['.name'])+' — '+(sv.address||'')));
     });
     o=s.taboption('conn',form.Flag,'failover',_('Авто-переключение'),
       _('Автоматически переключаться на следующий сервер, если активный перестаёт пропускать трафик.'));
@@ -191,7 +208,7 @@ return view.extend({
     s.option(form.Value,'label',_('Название'));
     o=s.option(form.ListValue,'server',_('Сервер'));
     uci.sections('mierukop','server').forEach(function(sv){
-      o.value(sv['.name'], (sv.label||sv['.name'])+' ('+(sv.address||'')+')');
+      o.value(sv['.name'], self.srvLabel(sv['.name'], (sv.label||sv['.name'])));
     });
     o=s.option(form.MultiValue,'community_lists',_('Списки')); o.display_size=10;
     LISTS.forEach(function(n){ o.value(n,n); });

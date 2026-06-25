@@ -80,16 +80,19 @@ case "$1" in
 		[ -n "$t" ] && [ "$t" != "0.000000" ] && awk "BEGIN{printf \"%.0f\n\", $t*1000}" || echo "n/a"
 		;;
 	pingall)
-		# ICMP RTT to EVERY server so the user can pick the best one.
+		# ICMP RTT to EVERY server so the user can pick the best one. Also caches the
+		# result so the LuCI server dropdowns can show "· Nms" without re-pinging.
 		# Output (one per line):  <section>|<label>|<ip>|<avg_ms or -->|<active?0/1>
 		act=$(active_server)
-		for s in $(server_list); do
+		{ for s in $(server_list); do
 			ip=$(srv_get "$s" address); lbl=$(srv_get "$s" label)
 			rtt=$(ping -c 3 -W 2 "$ip" 2>/dev/null | awk -F'= ' '/min\/avg\/max/{split($2,a,"/"); printf "%.0f", a[2]}')
 			a=0; [ "$s" = "$act" ] && a=1
 			echo "$s|${lbl:-$s}|$ip|${rtt:-—}|$a"
-		done
+		done; } | tee "$STATE_DIR/ping.cache"
 		;;
+	pingcache)
+		cat "$STATE_DIR/ping.cache" 2>/dev/null || true ;;
 	speedtest)
 		res=$(curl -fs --proxy "$PROXY" --max-time 15 -o /dev/null \
 			-w '%{speed_download} %{size_download}' \
