@@ -189,7 +189,7 @@ return view.extend({
 
     s=m.section(form.GridSection,'server',_('Серверы'),
       _('Добавьте несколько для авто-переключения. Активный выбирается во вкладке «Подключение». Пинг обновляется кнопкой «Пинг серверов» и раз в 10 мин.'));
-    s.addremove=true; s.anonymous=false; s.sortable=false;
+    s.addremove=true; s.anonymous=true; s.sortable=false;
     s.option(form.Value,'label',_('Метка'));
     s.option(form.Value,'address',_('Адрес')).datatype='host';
     s.option(form.Value,'port',_('Порт')).datatype='port';
@@ -207,7 +207,7 @@ return view.extend({
       'anime','news','porn','geoblock','block'];
     s=m.section(form.GridSection,'group',_('Группы маршрутизации'),
       _('Направить конкретные списки через конкретный сервер (напр. YouTube → один сервер, Meta → другой). Что не в группе — идёт через активный сервер. После изменения: «Обновить списки».'));
-    s.addremove=true; s.anonymous=false; s.nodescriptions=true;
+    s.addremove=true; s.anonymous=true; s.nodescriptions=true;
     o=s.option(form.Flag,'enabled',_('Вкл')); o.default='1'; o.editable=true;
     s.option(form.Value,'label',_('Название'));
     o=s.option(form.ListValue,'server',_('Сервер'));
