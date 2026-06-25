@@ -211,7 +211,7 @@ case "$1" in
 					for s in $(server_list); do case "$(srv_get "$s" label)" in *"$4"*) sv="$s"; break;; esac; done; }
 				[ "$(uci -q get $CONF.$sv)" = "server" ] || { echo "no such server: $4 (mierukop server list)"; exit 1; }
 				uci set $CONF.$gn=group; uci set $CONF.$gn.enabled=1
-				uci set $CONF.$gn.label="$3"; uci set $CONF.$gn.server="$sv"
+				uci set $CONF.$gn.label="$3"; uci -q delete $CONF.$gn.server; uci add_list $CONF.$gn.server="$sv"
 				shift 4; uci set $CONF.$gn.community_lists="$*"
 				uci commit $CONF
 				echo "group $gn: lists [$*] via $(srv_get "$sv" label); run: mierukop restart && mierukop update" ;;
@@ -221,7 +221,7 @@ case "$1" in
 			server)
 				# mierukop group server <name> <server-section[ server2 ...]>  (set the group's servers)
 				[ -n "$3" ] && [ -n "$4" ] || { echo "usage: mierukop group server <name> <server-section...>"; exit 1; }
-				gn="$3"; shift 3; uci set $CONF.$gn.server="$*"; uci commit $CONF
+				gn="$3"; shift 3; uci -q delete $CONF.$gn.server; for s in $*; do uci add_list $CONF.$gn.server="$s"; done; uci commit $CONF
 				echo "group $gn -> servers: $*; run: mierukop restart" ;;
 			*) echo "usage: mierukop group [list|add <name> <server> <lists...>|del <name>|server <name> <servers...>]" ;;
 		esac ;;

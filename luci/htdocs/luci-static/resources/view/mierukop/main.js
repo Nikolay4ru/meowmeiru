@@ -160,7 +160,7 @@ return view.extend({
     o=s.taboption('conn',form.ListValue,'active_server',_('Активный сервер'),
       _('Какой сервер ниже пропускает трафик. Учётные данные задаются в разделе «Серверы».'));
     uci.sections('mierukop','server').forEach(function(sv){
-      o.value(sv['.name'], self.srvLabel(sv['.name'], (sv.label||sv['.name'])+' — '+(sv.address||'')));
+      o.value(sv['.name'], self.srvLabel(sv['.name'], (sv.label||sv['.name'])));
     });
     o=s.taboption('conn',form.Flag,'failover',_('Авто-переключение'),
       _('Автоматически переключаться на следующий сервер, если активный перестаёт пропускать трафик.'));
@@ -210,7 +210,15 @@ return view.extend({
     s.addremove=true; s.anonymous=true; s.nodescriptions=true;
     o=s.option(form.Flag,'enabled',_('Вкл')); o.default='1'; o.editable=true;
     s.option(form.Value,'label',_('Название'));
-    o=s.option(form.ListValue,'server',_('Сервер'));
+    // display column: friendly server label(s) instead of raw section ids
+    o=s.option(form.DummyValue,'_srv',_('Сервер'));
+    o.cfgvalue=function(sid){
+      var v=uci.get('mierukop',sid,'server'); if(!v) return '—';
+      if(!Array.isArray(v)) v=String(v).split(/\s+/);
+      return v.filter(Boolean).map(function(n){ var sv=uci.get('mierukop',n); return (sv&&sv.label)?sv.label:n; }).join(', ');
+    };
+    // edit field (modal): multi-select of servers = failover within the group
+    o=s.option(form.MultiValue,'server',_('Серверы группы (failover)')); o.modalonly=true;
     uci.sections('mierukop','server').forEach(function(sv){
       o.value(sv['.name'], self.srvLabel(sv['.name'], (sv.label||sv['.name'])));
     });
