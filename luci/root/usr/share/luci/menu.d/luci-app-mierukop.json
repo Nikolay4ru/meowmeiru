@@ -1,6 +1,6 @@
 {
 	"admin/services/mierukop": {
-		"title": "mierukop",
+		"title": "meowMieru",
 		"order": 60,
 		"action": {
 			"type": "view",

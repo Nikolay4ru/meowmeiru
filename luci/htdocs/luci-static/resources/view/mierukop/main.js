@@ -322,12 +322,43 @@ return view.extend({
         ])
       ]);
 
+      // ── subscription import (paste a clash sub URL → add all mieru servers) ──
+      var subInput=E('input',{type:'text','class':'cbi-input-text',
+        style:'flex:1;min-width:260px',placeholder:'https://…/sub/…?format=clash'});
+      var subSection=E('div',{'class':'cbi-section'},[
+        E('h3',{},_('Подписка')),
+        E('div',{style:'font-size:12px;opacity:.75;margin-bottom:8px'},
+          _('Вставь ссылку на подписку (формат clash) — импортирую все mieru-серверы, применю и обновлю списки.')),
+        E('div',{'class':'mk-act'},[
+          subInput,
+          self.mkBtn('subimport','cbi-button-action',_('Импортировать'), function(){
+            var url=(subInput.value||'').trim();
+            if(!url) return Promise.resolve(_('Укажи ссылку на подписку.'));
+            return self.exec(['sub',url]).then(function(t){
+              return self.exec(['restart']).then(function(){
+                return self.exec(['update']).then(function(u){
+                  setTimeout(function(){ location.reload(); }, 2000);
+                  return (t||'')+'\n'+(u||'')+'\n'+_('Готово, обновляю страницу…');
+                });
+              });
+            });
+          }, out)
+        ])
+      ]);
+
+      var brand=E('div',{style:'display:flex;align-items:baseline;gap:10px;margin:2px 2px 10px'},[
+        E('h2',{style:'margin:0;font-weight:700;letter-spacing:-.01em'},'meowMieru'),
+        E('span',{style:'font-size:12px;opacity:.6'},_('маршрутизация через mieru'))
+      ]);
+
       var page=E('div',{},[
         E('style',{},CSS),
+        brand,
         statusSection,
         chartSection,
         qualSection,
         serverSection,
+        subSection,
         formNode
       ]);
 
