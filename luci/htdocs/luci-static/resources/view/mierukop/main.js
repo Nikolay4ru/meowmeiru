@@ -67,6 +67,19 @@ return view.extend({
     var g=(kind==='tun')?200:60, y=(kind==='tun')?400:120;
     return n<=g ? 'mk-up' : (n<=y ? 'mk-warn' : 'mk-down');
   },
+  // colour the "Пинг, мс" column in the Servers grid (rawhtml isn't honoured in
+  // grid cells, so style the cells via the DOM after render)
+  colorPings: function(){
+    var col=function(ms){ var n=parseInt(ms); return isNaN(n)?'#dc2626':(n<=60?'#16a34a':(n<=120?'#d97706':'#dc2626')); };
+    document.querySelectorAll('table').forEach(function(tbl){
+      var hdr=tbl.querySelector('tr'); if(!hdr) return; var idx=-1;
+      Array.prototype.forEach.call(hdr.children,function(th,i){ if((th.textContent||'').trim()==='Пинг, мс') idx=i; });
+      if(idx<0) return;
+      var rows=tbl.querySelectorAll('tr');
+      for(var r=1;r<rows.length;r++){ var c=rows[r].children[idx]; if(!c) continue;
+        c.style.fontWeight='bold'; c.style.color=col(c.textContent); }
+    });
+  },
 
   parse: function(t){ var o={}; (t||'').split('\n').forEach(function(l){
     var i=l.indexOf(':'); if(i>0) o[l.slice(0,i).trim()]=l.slice(i+1).trim(); }); return o; },
@@ -210,10 +223,8 @@ return view.extend({
     s.option(form.Value,'address',_('Адрес')).datatype='host';
     s.option(form.Value,'port',_('Порт')).datatype='port';
     // live latency column (from the cached pingall)
-    o=s.option(form.DummyValue,'_ping',_('Пинг, мс')); o.rawhtml=true;
-    o.cfgvalue=function(sid){ var ms=self.pingMap[sid];
-      if(!ms||ms==='—') return '<b class="mk-down">—</b>';
-      return '<b class="'+self.pingClass(ms,'net')+'">'+ms+'</b>'; };
+    o=s.option(form.DummyValue,'_ping',_('Пинг, мс'));
+    o.cfgvalue=function(sid){ var ms=self.pingMap[sid]; return (ms&&ms!=='—')?ms:'—'; };
     // credentials: editable in the modal, hidden from the always-visible table
     o=s.option(form.Value,'username',_('Пользователь')); o.modalonly=true;
     o=s.option(form.Value,'password',_('Пароль')); o.password=true; o.modalonly=true;
@@ -393,7 +404,9 @@ return view.extend({
       });
 
       self.refreshStatus();
-      poll.add(function(){ return self.refreshStatus(); }, 5);
+      setTimeout(function(){ self.colorPings(); }, 400);
+      setTimeout(function(){ self.colorPings(); }, 1500);
+      poll.add(function(){ self.colorPings(); return self.refreshStatus(); }, 5);
       poll.add(function(){
         return self.exec(['stats']).then(function(t){
           var p=self.parse(t); self.pushSample(p.rx_rate, p.tx_rate);
