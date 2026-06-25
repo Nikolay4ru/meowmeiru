@@ -188,13 +188,17 @@ return view.extend({
     o=s.taboption('adv',form.Value,'tun_name',_('Интерфейс туннеля')); o.optional=true; o.placeholder='mtun0';
 
     s=m.section(form.GridSection,'server',_('Серверы'),
-      _('Добавьте несколько для авто-переключения. Активный выбирается во вкладке «Подключение».'));
+      _('Добавьте несколько для авто-переключения. Активный выбирается во вкладке «Подключение». Пинг обновляется кнопкой «Пинг серверов» и раз в 10 мин.'));
     s.addremove=true; s.anonymous=false; s.sortable=false;
-    s.option(form.Value,'label',_('Название'));
+    s.option(form.Value,'label',_('Метка'));
     s.option(form.Value,'address',_('Адрес')).datatype='host';
     s.option(form.Value,'port',_('Порт')).datatype='port';
-    s.option(form.Value,'username',_('Пользователь'));
-    o=s.option(form.Value,'password',_('Пароль')); o.password=true;
+    // live latency column (from the cached pingall)
+    o=s.option(form.DummyValue,'_ping',_('Пинг, мс'));
+    o.cfgvalue=function(sid){ var ms=self.pingMap[sid]; return (ms&&ms!=='—')?ms:'—'; };
+    // credentials: editable in the modal, hidden from the always-visible table
+    o=s.option(form.Value,'username',_('Пользователь')); o.modalonly=true;
+    o=s.option(form.Value,'password',_('Пароль')); o.password=true; o.modalonly=true;
     o=s.option(form.ListValue,'transport',_('Транспорт')); o.value('TCP'); o.value('UDP');
 
     // ── routing groups: send specific lists through a specific server ──
