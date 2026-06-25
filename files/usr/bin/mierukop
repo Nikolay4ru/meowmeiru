@@ -94,21 +94,33 @@ case "$1" in
 	pingcache)
 		cat "$STATE_DIR/ping.cache" 2>/dev/null || true ;;
 	speedtest)
-		res=$(curl -fs --proxy "$PROXY" --max-time 15 -o /dev/null \
-			-w '%{speed_download} %{size_download}' \
-			"https://speed.cloudflare.com/__down?bytes=20000000" 2>/dev/null)
-		spd=$(echo "$res" | awk '{print $1}'); sz=$(echo "$res" | awk '{print $2}')
-		if [ -n "$spd" ] && [ "${sz:-0}" -gt 100000 ]; then
+		# Cloudflare's speed endpoint refuses mieru/datacenter IPs (returns 0) — use
+		# Google's CDN which is reliably reachable through the tunnel. Try a couple of
+		# mirrors so a single dead URL doesn't read as "0".
+		spd=""; sz=0
+		for u in \
+			"https://dl.google.com/dl/android/studio/install/2021.1.1.21/android-studio-2021.1.1.21-cros.deb" \
+			"https://dl.google.com/go/go1.21.0.linux-amd64.tar.gz" \
+			"https://speed.cloudflare.com/__down?bytes=20000000"; do
+			res=$(curl -fs --proxy "$PROXY" --max-time 15 -o /dev/null -w '%{speed_download} %{size_download}' --range 0-20000000 "$u" 2>/dev/null)
+			spd=$(echo "$res" | awk '{print $1}'); sz=$(echo "$res" | awk '{print $2}')
+			[ -n "$spd" ] && [ "${sz:-0}" -gt 1000000 ] && break
+		done
+		if [ -n "$spd" ] && [ "${sz:-0}" -gt 1000000 ]; then
 			awk "BEGIN{printf \"down_mbps: %.1f\n\", $spd*8/1000000}"
 		else
 			echo "down_mbps: 0"; echo "note: download failed (tunnel down?)"
 		fi
+		# upload measured against Google's generate_204 collector is unreliable; keep
+		# Cloudflare __up but treat 0 as "n/a" rather than a real reading
 		tmp="$STATE_DIR/up.bin"; head -c 8000000 /dev/zero > "$tmp" 2>/dev/null
 		up=$(curl -fs --proxy "$PROXY" --max-time 10 -o /dev/null \
 			-w '%{speed_upload}' --data-binary @"$tmp" \
 			"https://speed.cloudflare.com/__up" 2>/dev/null)
 		rm -f "$tmp"
-		[ -n "$up" ] && awk "BEGIN{printf \"up_mbps: %.1f\n\", $up*8/1000000}" || echo "up_mbps: 0"
+		if [ -n "$up" ] && awk "BEGIN{exit !($up>10000)}"; then
+			awk "BEGIN{printf \"up_mbps: %.1f\n\", $up*8/1000000}"
+		else echo "up_mbps: n/a"; fi
 		;;
 	stats)
 		rx=$(cat /sys/class/net/$TUN/statistics/rx_bytes 2>/dev/null || echo 0)

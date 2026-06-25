@@ -295,32 +295,16 @@ return view.extend({
         ])
       ]);
 
-      // ── server latency: ping every server so the user picks the best ──
-      self._pingTbl=E('div',{},E('div',{style:'opacity:.6;font-size:12px'},_('Нажмите «Пинг серверов» — измерю задержку до каждого (мс).')));
+      // ── refresh latency: re-ping all servers and reload so the Servers table
+      //    column + the server dropdowns all show fresh values (single source). ──
       var serverSection=E('div',{'class':'cbi-section'},[
-        E('h3',{},_('Серверы — задержка')),
-        self._pingTbl,
+        E('h3',{},_('Задержка серверов')),
+        E('div',{style:'font-size:12px;opacity:.75;margin-bottom:8px'},
+          _('Пинг (мс) показан в колонке «Пинг» таблицы «Серверы» ниже и в списках выбора сервера. Нажми, чтобы перемерить.')),
         E('div',{'class':'mk-act'},[
-          self.mkBtn('pingall','cbi-button-action',_('Пинг серверов'), function(){
-            self._pingTbl.innerHTML=''; self._pingTbl.appendChild(E('div',{style:'opacity:.6'},_('измеряю…')));
-            return self.exec(['pingall']).then(function(t){
-              var rows=(t||'').trim().split('\n').map(function(l){
-                var f=l.split('|'); return {sec:f[0],label:f[1],ip:f[2],ms:f[3],active:f[4]==='1'}; })
-                .filter(function(r){ return r.label; });
-              rows.sort(function(a,b){ var x=parseInt(a.ms),y=parseInt(b.ms);
-                if(isNaN(x))return 1; if(isNaN(y))return -1; return x-y; });
-              var best=null; rows.forEach(function(r){ if(best===null && !isNaN(parseInt(r.ms))) best=r.sec; });
-              var tbl=E('table',{'class':'table mk-st'},[ E('tr',{'class':'tr'},[
-                E('th',{'class':'th'},_('Сервер')), E('th',{'class':'th'},'IP'), E('th',{'class':'th'},_('Задержка, мс')) ]) ]);
-              rows.forEach(function(r){
-                var dead=isNaN(parseInt(r.ms)), isBest=(r.sec===best);
-                tbl.appendChild(E('tr',{'class':'tr'},[
-                  E('td',{'class':'td'}, (r.active?'● ':'')+r.label+(r.active?' '+_('(активен)'):'')+(isBest?' — '+_('лучший'):'') ),
-                  E('td',{'class':'td',style:'font-family:monospace'}, r.ip),
-                  E('td',{'class':'td'},[ E('b',{'class':dead?'mk-down':(isBest?'mk-up':'')}, r.ms) ]) ]));
-              });
-              self._pingTbl.innerHTML=''; self._pingTbl.appendChild(tbl);
-              return null;
+          self.mkBtn('pingall','cbi-button-action',_('Обновить пинг серверов'), function(){
+            return self.exec(['pingall']).then(function(){
+              setTimeout(function(){ location.reload(); }, 700); return null;
             });
           })
         ])
