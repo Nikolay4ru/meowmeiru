@@ -6,6 +6,11 @@ config mierukop 'settings'
 	option failover '1'
 	# auto-update the module from github (checked weekly via cron)
 	option auto_update '0'
+	# auto-pick the lowest-latency server (re-checked every 15 min via cron)
+	option auto_best '0'
+	# subscription URL (saved on import) + auto re-fetch it daily to rotate blocked IPs
+	option sub_url ''
+	option sub_auto '0'
 	# local socks5 that mieru exposes
 	option socks_port '1180'
 	# mieru multiplexing level: MULTIPLEXING_OFF|LOW|MIDDLE|HIGH (provider-dependent;

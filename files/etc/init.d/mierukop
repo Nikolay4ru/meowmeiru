@@ -166,12 +166,12 @@ setup_nft_all() {
 		post="$post
 		oifname \"$tun\" masquerade"
 		if [ "$kind" = default ]; then
-			defrule="		ip daddr @$setname meta mark set $mark"
+			defrule="		ip daddr @$setname meta mark set $mark ct mark set $mark"
 		else
 			pre="$pre
-		ip daddr @$setname meta mark set $mark"
+		ip daddr @$setname meta mark set $mark ct mark set $mark"
 			out="$out
-		ip daddr @$setname meta mark set $mark"
+		ip daddr @$setname meta mark set $mark ct mark set $mark"
 		fi
 	done
 	nft -f - <<EOF
@@ -238,10 +238,14 @@ teardown_fw_zone() {
 setup_cron() {
 	local cron="/etc/crontabs/root" iv
 	touch "$cron"
-	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d' "$cron"
+	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d;/mierukop auto-best/d;/mierukop sub-refresh/d' "$cron"
 	[ "$(uci_get watchdog)" = "1" ] && echo "*/5 * * * * /etc/mierukop/watchdog.sh" >> "$cron"
 	echo "* * * * * /usr/bin/mierukop sample" >> "$cron"
 	echo "*/10 * * * * /usr/bin/mierukop pingall >/dev/null 2>&1" >> "$cron"
+	# auto-pick fastest server (no-op unless auto_best=1)
+	echo "*/15 * * * * /usr/bin/mierukop auto-best >/dev/null 2>&1" >> "$cron"
+	# daily subscription re-fetch (no-op unless sub_auto=1) — rotates blocked IPs
+	echo "41 4 * * * /usr/bin/mierukop sub-refresh >/dev/null 2>&1" >> "$cron"
 	# weekly self-update check (only updates if auto_update=1 and a newer version exists)
 	echo "17 4 * * 6 /usr/bin/mierukop update-auto >/dev/null 2>&1" >> "$cron"
 	iv=$(uci_get update_interval)
@@ -307,7 +311,7 @@ stop_service() {
 	done
 	teardown_nft
 	rm -f /tmp/dnsmasq.d/mierukop*.conf /tmp/dnsmasq.*.d/mierukop*.conf 2>/dev/null
-	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d' /etc/crontabs/root 2>/dev/null
+	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d;/mierukop auto-best/d;/mierukop sub-refresh/d' /etc/crontabs/root 2>/dev/null
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	log "stopped"
 }

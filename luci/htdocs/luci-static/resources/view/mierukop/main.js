@@ -29,6 +29,15 @@ var CSS = `
 .mk-badge.ok{color:#16a34a;background:rgba(22,163,74,.12);border-color:rgba(22,163,74,.35)}
 .mk-badge.warn{color:#b45309;background:rgba(217,119,6,.12);border-color:rgba(217,119,6,.35)}
 .mk-badge.bad{color:#dc2626;background:rgba(220,38,38,.12);border-color:rgba(220,38,38,.35)}
+.mk-cards{display:flex;gap:10px;flex-wrap:wrap}
+.mk-card{flex:1 1 210px;min-width:210px;border:1px solid rgba(127,127,127,.25);border-radius:8px;
+         padding:10px 12px;background:rgba(127,127,127,.04)}
+.mk-card-h{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
+.mk-card-h b{font-size:13px;font-weight:700}
+.mk-card-r{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;gap:10px}
+.mk-card-r>span{opacity:.6;white-space:nowrap}
+.mk-card-r>b{font-weight:600;text-align:right;word-break:break-all}
+.mk-hint{font-size:12px;opacity:.75;margin-bottom:8px}
 `;
 var RX_COL='#16a34a', TX_COL='#2563eb';
 
@@ -127,6 +136,104 @@ return view.extend({
     this.drawChart();
   },
 
+  fmtBytes: function(n){ n=+n||0;
+    if(n>=1073741824) return (n/1073741824).toFixed(2)+' ГБ';
+    if(n>=1048576)    return (n/1048576).toFixed(1)+' МБ';
+    if(n>=1024)       return (n/1024).toFixed(0)+' КБ';
+    return n+' Б'; },
+
+  // ── per-tunnel status cards (server + live exit IP for default + each group) ──
+  loadTunnels: function(){
+    var self=this;
+    return self.exec(['tunnels']).then(function(t){
+      self._tuns.innerHTML='';
+      (t||'').trim().split('\n').forEach(function(l){
+        if(!l) return; var f=l.split('|'); if(f.length<4) return;
+        var ok=(f[3]&&f[3]!=='—');
+        self._tuns.appendChild(E('div',{'class':'mk-card'},[
+          E('div',{'class':'mk-card-h'},[ E('b',{},f[0]),
+            E('span',{'class':'mk-badge '+(ok?'ok':'bad')}, ok?_('● активен'):_('● нет выхода')) ]),
+          E('div',{'class':'mk-card-r'},[E('span',{},_('Сервер')), E('b',{},f[1]||'—')]),
+          E('div',{'class':'mk-card-r'},[E('span',{},_('Внешний IP')), E('b',{},f[3]||'—')]),
+          E('div',{'class':'mk-card-r'},[E('span',{},'SOCKS'), E('b',{},f[2])])
+        ]));
+      });
+      if(!self._tuns.children.length) self._tuns.appendChild(E('div',{'class':'mk-hint'},_('нет туннелей')));
+    });
+  },
+
+  // ── LAN clients + how much traffic each routes through a tunnel ──
+  loadClients: function(){
+    var self=this;
+    return self.exec(['clients']).then(function(t){
+      var rows=[E('tr',{'class':'tr table-titles'},[
+        E('th',{'class':'th'},_('Устройство')), E('th',{'class':'th'},'IP'),
+        E('th',{'class':'th'},_('Соединений')), E('th',{'class':'th'},_('Через туннель')),
+        E('th',{'class':'th'},_('Трафик'))])];
+      (t||'').trim().split('\n').forEach(function(l){
+        if(!l) return; var f=l.split('|'); if(f.length<5) return;
+        var routed=parseInt(f[3])||0, rc=E('td',{'class':'td'});
+        rc.innerHTML = routed>0 ? '<b class="mk-up">● '+routed+'</b>' : '<span style="opacity:.5">—</span>';
+        rows.push(E('tr',{'class':'tr'},[
+          E('td',{'class':'td'}, f[1]==='?'?'—':f[1]),
+          E('td',{'class':'td'}, f[0]),
+          E('td',{'class':'td'}, f[2]),
+          rc,
+          E('td',{'class':'td'}, self.fmtBytes(f[4]))
+        ]));
+      });
+      if(rows.length===1) rows.push(E('tr',{'class':'tr'},[
+        E('td',{'class':'td',colspan:'5',style:'opacity:.6'},_('нет активных клиентов'))]));
+      self._clients.innerHTML=''; self._clients.appendChild(E('table',{'class':'table'},rows));
+    });
+  },
+
+  // ── verify the bypass: per-tunnel exit + whether key services answer ──
+  runSelfcheck: function(){
+    var self=this;
+    self._scout.innerHTML='<div class="mk-hint">'+_('проверяю выходы и сервисы (10–20 c)…')+'</div>';
+    return self.exec(['selfcheck']).then(function(t){
+      var code=function(c){ c=parseInt(c); var ok=(c>=200&&c<400);
+        return '<b class="'+(ok?'mk-up':'mk-down')+'">'+(isNaN(c)?'—':(ok?'✓ '+c:'✗ '+c))+'</b>'; };
+      var rows=[E('tr',{'class':'tr table-titles'},[
+        E('th',{'class':'th'},_('Туннель')), E('th',{'class':'th'},_('Внешний IP')),
+        E('th',{'class':'th'},_('Страна')), E('th',{'class':'th'},'YouTube'),
+        E('th',{'class':'th'},'Telegram'), E('th',{'class':'th'},'Discord')])];
+      (t||'').trim().split('\n').forEach(function(l){
+        if(!l) return; var f=l.split('|'); if(f.length<6) return;
+        var tr=E('tr',{'class':'tr'},[
+          E('td',{'class':'td'},f[0]), E('td',{'class':'td'},f[1]), E('td',{'class':'td'},f[2])]);
+        ['3','4','5'].forEach(function(i){ var td=E('td',{'class':'td'}); td.innerHTML=code(f[i]); tr.appendChild(td); });
+        rows.push(tr);
+      });
+      self._scout.innerHTML=''; self._scout.appendChild(E('table',{'class':'table'},rows));
+      return null;
+    });
+  },
+
+  // ── latency sparkline from the per-minute ping history ──
+  drawPingChart: function(){
+    var self=this;
+    return self.exec(['ping-history']).then(function(csv){
+      var b=[]; (csv||'').trim().split('\n').forEach(function(l){
+        var f=l.split(','); if(f.length>=2){ var v=parseInt(f[1]); if(!isNaN(v)) b.push(v); } });
+      b=b.slice(-90);
+      if(!b.length){ self._pingsvg.innerHTML='<div class="mk-hint">'+_('история накапливается (раз в минуту)…')+'</div>'; return; }
+      var W=600,H=70,pad=8, max=1,min=1e9;
+      b.forEach(function(v){ if(v>max)max=v; if(v<min)min=v; });
+      if(min===1e9)min=0; var rng=(max-min)||1, n=b.length, step=n>1?W/(n-1):W;
+      var Y=function(v){ return (H-pad-((v-min)/rng)*(H-pad*2)).toFixed(1); };
+      var d=''; b.forEach(function(v,i){ d+=(i?'L':'M')+(i*step).toFixed(1)+' '+Y(v)+' '; });
+      var last=b[n-1], col=(last<=60?RX_COL:(last<=120?'#d97706':'#dc2626'));
+      self._pingsvg.innerHTML=
+        '<svg class="mk-chart" style="height:70px" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
+        +'<path d="'+d+'L'+((n-1)*step).toFixed(1)+' '+H+' L0 '+H+' Z" fill="'+col+'" fill-opacity=".15"/>'
+        +'<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="1.5" stroke-linejoin="round"/></svg>'
+        +'<div class="mk-hint" style="margin-top:4px">'+_('текущий')+' <b class="'+self.pingClass(last,'net')
+        +'">'+last+' ms</b> · '+_('мин')+' '+min+' · '+_('макс')+' '+max+'</div>';
+    });
+  },
+
   refreshStatus: function(){
     var self=this;
     return this.exec(['status']).then(function(out){
@@ -212,6 +319,10 @@ return view.extend({
       _('Отбрасывать маршрутизируемый трафик, если туннель недоступен, вместо утечки напрямую.'));
     o=s.taboption('adv',form.Flag,'dns_hijack',_('Принудительный DNS роутера'),
       _('Перенаправлять DNS клиентов на роутер, чтобы доменная маршрутизация работала для всех устройств.'));
+    o=s.taboption('adv',form.Flag,'auto_best',_('Авто-выбор лучшего сервера'),
+      _('Каждые 15 минут измерять пинг и переключаться на самый быстрый сервер.'));
+    o=s.taboption('adv',form.Flag,'sub_auto',_('Авто-обновление подписки'),
+      _('Раз в сутки заново скачивать сохранённую подписку — подтягивает новые серверы и сменившиеся IP.'));
     o=s.taboption('adv',form.Flag,'auto_update',_('Авто-обновление модуля'),
       _('Раз в неделю проверять GitHub и автоматически ставить новую версию meowMieru.'));
     o=s.taboption('adv',form.Value,'update_interval',_('Обновление списков (часы)'));
@@ -299,9 +410,45 @@ return view.extend({
       // ── traffic chart section ──
       self._svg=E('div',{});
       self._leg=E('div',{'class':'mk-leg'});
+      self._pingsvg=E('div',{style:'margin-top:14px'});
       var chartSection=E('div',{'class':'cbi-section'},[
         E('h3',{},_('Трафик туннеля')),
-        self._svg, self._leg
+        self._svg, self._leg,
+        E('div',{style:'font-size:12px;opacity:.6;margin:14px 0 2px'},_('Задержка активного сервера (история)')),
+        self._pingsvg
+      ]);
+
+      // ── per-tunnel live status cards ──
+      self._tuns=E('div',{'class':'mk-cards'});
+      var tunnelsSection=E('div',{'class':'cbi-section'},[
+        E('h3',{},_('Туннели')),
+        E('div',{'class':'mk-hint'},_('Внешний IP каждого туннеля (по умолчанию + группы). Обновляется при загрузке.')),
+        self._tuns,
+        E('div',{'class':'mk-act'},[
+          self.mkBtn('tunref','cbi-button-action',_('Обновить'), function(){ return self.loadTunnels(); })
+        ])
+      ]);
+
+      // ── bypass self-check ──
+      self._scout=E('div',{style:'margin-top:6px'});
+      var selfcheckSection=E('div',{'class':'cbi-section'},[
+        E('h3',{},_('Проверка обхода')),
+        E('div',{'class':'mk-hint'},_('Показывает внешний IP и страну каждого туннеля и реально ли отвечают YouTube / Telegram / Discord через него.')),
+        E('div',{'class':'mk-act'},[
+          self.mkBtn('selfchk','cbi-button-action',_('Проверить сейчас'), function(){ return self.runSelfcheck(); })
+        ]),
+        self._scout
+      ]);
+
+      // ── connected LAN clients ──
+      self._clients=E('div',{style:'margin-top:6px'});
+      var clientsSection=E('div',{'class':'cbi-section'},[
+        E('h3',{},_('Клиенты')),
+        E('div',{'class':'mk-hint'},_('Устройства локальной сети, их активные соединения и сколько из них идёт через туннель.')),
+        self._clients,
+        E('div',{'class':'mk-act'},[
+          self.mkBtn('cliref','cbi-button-action',_('Обновить'), function(){ return self.loadClients(); })
+        ])
       ]);
 
       // ── quality section (ping / speedtest) ──
@@ -347,8 +494,15 @@ return view.extend({
             return self.exec(['pingall']).then(function(){
               setTimeout(function(){ location.reload(); }, 700); return null;
             });
-          })
-        ])
+          }),
+          self.mkBtn('bestsrv','cbi-button-positive',_('Выбрать лучший сейчас'), function(){
+            return self.exec(['best-server']).then(function(t){
+              setTimeout(function(){ location.reload(); }, 1500);
+              return t;
+            });
+          }, out)
+        ]),
+        out
       ]);
 
       // ── subscription import (paste a clash sub URL → add all mieru servers) ──
@@ -413,9 +567,12 @@ return view.extend({
         E('style',{},CSS),
         brand,
         statusSection,
+        tunnelsSection,
         chartSection,
         qualSection,
+        selfcheckSection,
         serverSection,
+        clientsSection,
         subSection,
         formNode,
         versionSection
@@ -435,9 +592,11 @@ return view.extend({
       });
 
       self.refreshStatus();
+      self.loadTunnels(); self.loadClients(); self.drawPingChart();
       setTimeout(function(){ self.colorPings(); }, 400);
       setTimeout(function(){ self.colorPings(); }, 1500);
       poll.add(function(){ self.colorPings(); return self.refreshStatus(); }, 5);
+      poll.add(function(){ self.loadClients(); self.drawPingChart(); }, 30);
       poll.add(function(){
         return self.exec(['stats']).then(function(t){
           var p=self.parse(t); self.pushSample(p.rx_rate, p.tx_rate);
