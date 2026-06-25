@@ -139,6 +139,7 @@ return view.extend({
           connected?_('подключён'):(mieru?_('только mieru'):_('недоступен')));
       self._v.server.textContent=s.server||'—';
       self._v.subnets.textContent=s.subnets||'—';
+      if(self._verEl && s.version) self._verEl.textContent='v'+s.version;
       // header badge
       if(self._badge){
         self._badge.className='mk-badge '+(connected?'ok':(svc?'warn':'bad'));
@@ -211,6 +212,8 @@ return view.extend({
       _('Отбрасывать маршрутизируемый трафик, если туннель недоступен, вместо утечки напрямую.'));
     o=s.taboption('adv',form.Flag,'dns_hijack',_('Принудительный DNS роутера'),
       _('Перенаправлять DNS клиентов на роутер, чтобы доменная маршрутизация работала для всех устройств.'));
+    o=s.taboption('adv',form.Flag,'auto_update',_('Авто-обновление модуля'),
+      _('Раз в неделю проверять GitHub и автоматически ставить новую версию meowMieru.'));
     o=s.taboption('adv',form.Value,'update_interval',_('Обновление списков (часы)'));
     o.datatype='uinteger'; o.placeholder='24';
     o=s.taboption('adv',form.Value,'socks_port',_('Локальный порт SOCKS5')); o.datatype='port'; o.optional=true;
@@ -372,6 +375,33 @@ return view.extend({
         ])
       ]);
 
+      // ── version + self-update ──
+      self._verEl=E('b',{},'…'); self._upd=E('span',{style:'margin-left:8px'},'');
+      var versionSection=E('div',{'class':'cbi-section'},[
+        E('h3',{},_('Версия и обновление')),
+        E('div',{'class':'mk-act',style:'align-items:center'},[
+          E('span',{},[_('meowMieru '), self._verEl]),
+          self.mkBtn('updchk','cbi-button-action',_('Проверить обновление'), function(){
+            self._upd.innerHTML=' '+_('проверяю…');
+            return self.exec(['update-check']).then(function(t){
+              var p=self.parse(t);
+              if(p.status==='update-available') self._upd.innerHTML=' <b class="mk-warn">'+_('доступно: ')+(p.latest||'')+'</b>';
+              else if(p.status==='up-to-date') self._upd.innerHTML=' <b class="mk-up">'+_('актуальная версия')+'</b>';
+              else self._upd.innerHTML=' <b class="mk-down">'+_('GitHub недоступен')+'</b>';
+              return null;
+            });
+          }),
+          self.mkBtn('updinst','cbi-button-positive',_('Обновить сейчас'), function(){
+            self._upd.innerHTML=' '+_('обновляю через туннель…');
+            return self.exec(['self-update']).then(function(t){
+              setTimeout(function(){ location.reload(); }, 2500);
+              return t;
+            });
+          }, out),
+          self._upd
+        ])
+      ]);
+
       self._badge=E('span',{'class':'mk-badge'},'…');
       var brand=E('div',{style:'display:flex;align-items:center;gap:10px;margin:2px 2px 12px'},[
         E('h2',{style:'margin:0;font-weight:700;letter-spacing:-.01em'},'meowMieru'),
@@ -387,7 +417,8 @@ return view.extend({
         qualSection,
         serverSection,
         subSection,
-        formNode
+        formNode,
+        versionSection
       ]);
 
       // auto-show the active server's cached ping in Quality (so it's not blank)

@@ -8,6 +8,13 @@ PROXY="socks5h://127.0.0.1:${SOCKS_PORT}"
 TUN="$(uci -q get $CONF.settings.tun_name || echo mtun0)"
 STATE_DIR="/tmp/mierukop"; mkdir -p "$STATE_DIR" 2>/dev/null
 TRAFFIC_LOG="$STATE_DIR/traffic.csv"
+VER_FILE="/etc/mierukop/VERSION"
+VERSION="$(cat "$VER_FILE" 2>/dev/null || echo 0.0.0)"
+REPO_RAW="${MIERUKOP_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main}"
+# fetch a repo file: try via the tunnel first (raw.githubusercontent is DPI-blocked
+# in RU), then direct as a fallback.
+repo_dl() { curl -fs --proxy "$PROXY" --max-time 60 -o "$2" "$REPO_RAW/$1" 2>/dev/null || curl -fs --max-time 60 -o "$2" "$REPO_RAW/$1" 2>/dev/null; }
+repo_cat() { curl -fs --proxy "$PROXY" --max-time 15 "$REPO_RAW/$1" 2>/dev/null || curl -fs --max-time 15 "$REPO_RAW/$1" 2>/dev/null; }
 
 # ── server helpers (mirror init.d) ──
 server_list() { uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=server$/\1/p"; }
@@ -24,6 +31,9 @@ mierukop — policy routing over mieru (podkop-style)
 
 Usage: mierukop <command>
   start | stop | restart     manage the service
+  version                    show module version
+  update-check               check github for a newer version
+  self-update                download + install the latest version (via tunnel)
   status                     show service + tunnel health
   test                       check tunnel exit IP + a proxied domain
   ping                       latency to server + through the tunnel
@@ -56,6 +66,7 @@ case "$1" in
 	start|stop|restart) /etc/init.d/mierukop "$1" ;;
 	status)
 		sv=$(active_server)
+		echo "version: $VERSION"
 		echo "service: $(/etc/init.d/mierukop running >/dev/null 2>&1 && echo running || echo stopped)"
 		echo "mieru:   $(pgrep -f '/usr/bin/mieru' >/dev/null && echo up || echo down)"
 		echo "tun2socks: $(pgrep -f hev-socks5-tunnel >/dev/null && echo up || echo down)"
@@ -93,6 +104,55 @@ case "$1" in
 		;;
 	pingcache)
 		cat "$STATE_DIR/ping.cache" 2>/dev/null || true ;;
+	version) echo "$VERSION" ;;
+	update-check)
+		remote=$(repo_cat VERSION | tr -d ' \r\n\t')
+		echo "current: $VERSION"
+		echo "latest: ${remote:-unknown}"
+		if [ -z "$remote" ]; then echo "status: cannot reach github (tunnel down?)"
+		elif [ "$remote" = "$VERSION" ]; then echo "status: up-to-date"
+		else echo "status: update-available"; fi
+		;;
+	self-update)
+		echo "fetching latest meowMieru from github (via tunnel)…"
+		d=/tmp/mkup; rm -rf "$d"; mkdir -p "$d"; ok=1
+		# (file repo-path : local)
+		for pair in \
+			"files/etc/init.d/mierukop:initd" \
+			"files/etc/mierukop/update-lists.sh:ul" \
+			"files/etc/mierukop/watchdog.sh:wd" \
+			"files/usr/bin/mierukop:cli" \
+			"luci/htdocs/luci-static/resources/view/mierukop/main.js:js" \
+			"luci/root/usr/share/luci/menu.d/luci-app-mierukop.json:menu" \
+			"luci/root/usr/share/rpcd/acl.d/luci-app-mierukop.json:acl" \
+			"VERSION:ver"; do
+			repo_dl "${pair%%:*}" "$d/${pair##*:}" && [ -s "$d/${pair##*:}" ] || { echo "  download failed: ${pair%%:*}"; ok=0; }
+		done
+		# sanity: shell scripts must parse, JS/JSON non-empty
+		for f in initd ul wd cli; do sh -n "$d/$f" 2>/dev/null || { echo "  bad script: $f"; ok=0; }; done
+		grep -q "view.extend" "$d/js" 2>/dev/null || ok=0
+		[ "$ok" = 1 ] || { echo "update aborted (download/sanity failed) — current $VERSION kept"; rm -rf "$d"; exit 1; }
+		cp "$d/initd" /etc/init.d/mierukop; cp "$d/ul" /etc/mierukop/update-lists.sh
+		cp "$d/wd" /etc/mierukop/watchdog.sh; cp "$d/cli" /usr/bin/mierukop
+		cp "$d/js" /www/luci-static/resources/view/mierukop/main.js
+		cp "$d/menu" /usr/share/luci/menu.d/luci-app-mierukop.json
+		cp "$d/acl" /usr/share/rpcd/acl.d/luci-app-mierukop.json
+		mkdir -p /etc/mierukop; cp "$d/ver" "$VER_FILE"
+		chmod +x /etc/init.d/mierukop /usr/bin/mierukop /etc/mierukop/*.sh
+		sed -i "s/^Version: .*/Version: $(cat "$VER_FILE")/" /usr/lib/opkg/info/mierukop.control 2>/dev/null
+		rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null; /etc/init.d/rpcd reload >/dev/null 2>&1
+		/etc/init.d/mierukop restart >/dev/null 2>&1
+		rm -rf "$d"
+		echo "updated to $(cat "$VER_FILE")"
+		;;
+	update-auto)
+		# cron: self-update only if enabled AND a newer version exists
+		[ "$(uci -q get $CONF.settings.auto_update)" = "1" ] || exit 0
+		remote=$(repo_cat VERSION | tr -d ' \r\n\t')
+		[ -n "$remote" ] && [ "$remote" != "$VERSION" ] || exit 0
+		logger -t mierukop "auto-update $VERSION -> $remote"
+		/usr/bin/mierukop self-update >/dev/null 2>&1
+		;;
 	speedtest)
 		# Cloudflare's speed endpoint refuses mieru/datacenter IPs (returns 0) — use
 		# Google's CDN which is reliably reachable through the tunnel. Try a couple of

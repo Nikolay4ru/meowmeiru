@@ -118,11 +118,13 @@ fetch_file etc/mierukop/update-lists.sh /etc/mierukop/update-lists.sh 755
 fetch_file etc/mierukop/watchdog.sh    /etc/mierukop/watchdog.sh     755
 fetch_file usr/bin/mierukop            /usr/bin/mierukop             755
 ln -sf /usr/bin/mierukop /usr/bin/meowmieru   # meowMieru brand alias
+# module version file (used by update-check / self-update)
+dl "$REPO/VERSION" /etc/mierukop/VERSION 2>/dev/null || echo "1.1.0" > /etc/mierukop/VERSION
 mkdir -p /etc/mierukop/lists
 
 # ── register with opkg so it shows in the LuCI package manager (removable/upgradeable) ──
 say "registering package with opkg…"
-PKG_VER="${PKG_VER:-1.0.0}"
+PKG_VER="$(cat /etc/mierukop/VERSION 2>/dev/null || echo 1.1.0)"
 INFO=/usr/lib/opkg/info; STATUS=/usr/lib/opkg/status; mkdir -p "$INFO"
 PKG_FILES="/etc/config/mierukop /etc/init.d/mierukop /etc/mierukop/update-lists.sh \
 /etc/mierukop/watchdog.sh /usr/bin/mierukop /www/luci-static/resources/view/mierukop/main.js \

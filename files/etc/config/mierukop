@@ -4,6 +4,8 @@ config mierukop 'settings'
 	option active_server 'main'
 	# automatically switch to the next server if the active one fails
 	option failover '1'
+	# auto-update the module from github (checked weekly via cron)
+	option auto_update '0'
 	# local socks5 that mieru exposes
 	option socks_port '1180'
 	# mieru multiplexing level: MULTIPLEXING_OFF|LOW|MIDDLE|HIGH (provider-dependent;
