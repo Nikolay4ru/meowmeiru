@@ -24,6 +24,11 @@ var CSS = `
         padding:10px 12px;border-radius:4px;margin-top:10px;max-height:200px;overflow:auto;display:none}
 .mk-up{color:#16a34a;font-weight:bold}.mk-down{color:#dc2626;font-weight:bold}.mk-warn{color:#d97706;font-weight:bold}
 .mk-st td{padding:5px 8px}
+.mk-badge{font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;line-height:1;white-space:nowrap;
+          border:1px solid transparent}
+.mk-badge.ok{color:#16a34a;background:rgba(22,163,74,.12);border-color:rgba(22,163,74,.35)}
+.mk-badge.warn{color:#b45309;background:rgba(217,119,6,.12);border-color:rgba(217,119,6,.35)}
+.mk-badge.bad{color:#dc2626;background:rgba(220,38,38,.12);border-color:rgba(220,38,38,.35)}
 `;
 var RX_COL='#16a34a', TX_COL='#2563eb';
 
@@ -55,6 +60,12 @@ return view.extend({
   srvLabel: function(sec, base){
     var ms=this.pingMap[sec];
     return base + (ms && ms!=='—' ? ' · '+ms+'ms' : '');
+  },
+  // colour class by latency. kind 'net' = direct ICMP (low), 'tun' = via tunnel (high)
+  pingClass: function(ms, kind){
+    var n=parseInt(ms); if(isNaN(n)) return 'mk-down';
+    var g=(kind==='tun')?200:60, y=(kind==='tun')?400:120;
+    return n<=g ? 'mk-up' : (n<=y ? 'mk-warn' : 'mk-down');
   },
 
   parse: function(t){ var o={}; (t||'').split('\n').forEach(function(l){
@@ -115,6 +126,11 @@ return view.extend({
           connected?_('подключён'):(mieru?_('только mieru'):_('недоступен')));
       self._v.server.textContent=s.server||'—';
       self._v.subnets.textContent=s.subnets||'—';
+      // header badge
+      if(self._badge){
+        self._badge.className='mk-badge '+(connected?'ok':(svc?'warn':'bad'));
+        self._badge.textContent=connected?_('● подключён'):(svc?_('● деградация'):_('● остановлен'));
+      }
       // state-aware buttons
       self._setBtn('start', svc); self._setBtn('stop', !svc);
       self._setBtn('restart', !svc); self._setBtn('test', !connected);
@@ -194,8 +210,10 @@ return view.extend({
     s.option(form.Value,'address',_('Адрес')).datatype='host';
     s.option(form.Value,'port',_('Порт')).datatype='port';
     // live latency column (from the cached pingall)
-    o=s.option(form.DummyValue,'_ping',_('Пинг, мс'));
-    o.cfgvalue=function(sid){ var ms=self.pingMap[sid]; return (ms&&ms!=='—')?ms:'—'; };
+    o=s.option(form.DummyValue,'_ping',_('Пинг, мс')); o.rawhtml=true;
+    o.cfgvalue=function(sid){ var ms=self.pingMap[sid];
+      if(!ms||ms==='—') return '<b class="mk-down">—</b>';
+      return '<b class="'+self.pingClass(ms,'net')+'">'+ms+'</b>'; };
     // credentials: editable in the modal, hidden from the always-visible table
     o=s.option(form.Value,'username',_('Пользователь')); o.modalonly=true;
     o=s.option(form.Value,'password',_('Пароль')); o.password=true; o.modalonly=true;
@@ -286,17 +304,18 @@ return view.extend({
           self.mkBtn('ping','cbi-button-action',_('Пинг'), function(){
             return self.exec(['ping']).then(function(t){
               var p=self.parse(t);
-              self._q.srtt.textContent=p.server_rtt_ms||'—';
-              self._q.trtt.textContent=p.tunnel_rtt_ms||'—';
+              var sv=p.server_rtt_ms||'—', tv=p.tunnel_rtt_ms||'—';
+              self._q.srtt.textContent=sv; self._q.srtt.className=self.pingClass(sv,'net');
+              self._q.trtt.textContent=tv; self._q.trtt.className=self.pingClass(tv,'tun');
               return null;
             });
           }),
           self.mkBtn('speed','cbi-button-action',_('Тест скорости'), function(){
             self._q.down.textContent='…'; self._q.up.textContent='…';
             return self.exec(['speedtest']).then(function(t){
-              var p=self.parse(t);
-              self._q.down.textContent=p.down_mbps||'0';
-              self._q.up.textContent=p.up_mbps||'0';
+              var p=self.parse(t), sc=function(v){ v=parseFloat(v); return v>=20?'mk-up':(v>=5?'mk-warn':'mk-down'); };
+              self._q.down.textContent=p.down_mbps||'0'; self._q.down.className=sc(p.down_mbps);
+              self._q.up.textContent=p.up_mbps||'n/a'; self._q.up.className=sc(p.up_mbps);
               return null;
             });
           })
@@ -342,9 +361,11 @@ return view.extend({
         ])
       ]);
 
-      var brand=E('div',{style:'display:flex;align-items:baseline;gap:10px;margin:2px 2px 10px'},[
+      self._badge=E('span',{'class':'mk-badge'},'…');
+      var brand=E('div',{style:'display:flex;align-items:center;gap:10px;margin:2px 2px 12px'},[
         E('h2',{style:'margin:0;font-weight:700;letter-spacing:-.01em'},'meowMieru'),
-        E('span',{style:'font-size:12px;opacity:.6'},_('маршрутизация через mieru'))
+        E('span',{style:'font-size:12px;opacity:.6'},_('маршрутизация через mieru')),
+        self._badge
       ]);
 
       var page=E('div',{},[
@@ -357,6 +378,10 @@ return view.extend({
         subSection,
         formNode
       ]);
+
+      // auto-show the active server's cached ping in Quality (so it's not blank)
+      var _act=uci.get('mierukop','settings','active_server'), _am=_act&&self.pingMap[_act];
+      if(_am && _am!=='—'){ self._q.srtt.textContent=_am; self._q.srtt.className=self.pingClass(_am,'net'); }
 
       self.drawChart();
       self.exec(['history']).then(function(csv){
