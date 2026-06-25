@@ -27,6 +27,7 @@ Usage: mierukop <command>
   status                     show service + tunnel health
   test                       check tunnel exit IP + a proxied domain
   ping                       latency to server + through the tunnel
+  pingall                    ICMP ping (ms) to every server (pick the best)
   speedtest                  measure tunnel throughput (down/up)
   stats                      instantaneous tunnel rx/tx counters + rate
   history                    traffic samples for the dashboard chart
@@ -77,6 +78,17 @@ case "$1" in
 		echo -n "tunnel_rtt_ms: "
 		t=$(curl -fs --proxy "$PROXY" --max-time 10 -o /dev/null -w '%{time_starttransfer}' https://www.google.com/generate_204 2>/dev/null)
 		[ -n "$t" ] && [ "$t" != "0.000000" ] && awk "BEGIN{printf \"%.0f\n\", $t*1000}" || echo "n/a"
+		;;
+	pingall)
+		# ICMP RTT to EVERY server so the user can pick the best one.
+		# Output (one per line):  <section>|<label>|<ip>|<avg_ms or -->|<active?0/1>
+		act=$(active_server)
+		for s in $(server_list); do
+			ip=$(srv_get "$s" address); lbl=$(srv_get "$s" label)
+			rtt=$(ping -c 3 -W 2 "$ip" 2>/dev/null | awk -F'= ' '/min\/avg\/max/{split($2,a,"/"); printf "%.0f", a[2]}')
+			a=0; [ "$s" = "$act" ] && a=1
+			echo "$s|${lbl:-$s}|$ip|${rtt:-—}|$a"
+		done
 		;;
 	speedtest)
 		res=$(curl -fs --proxy "$PROXY" --max-time 15 -o /dev/null \

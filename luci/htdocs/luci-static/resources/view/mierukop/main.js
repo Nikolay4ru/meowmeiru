@@ -180,6 +180,22 @@ return view.extend({
     o=s.option(form.Value,'password',_('Пароль')); o.password=true;
     o=s.option(form.ListValue,'transport',_('Транспорт')); o.value('TCP'); o.value('UDP');
 
+    // ── routing groups: send specific lists through a specific server ──
+    var LISTS=['telegram','meta','twitter','discord','roblox','cloudflare','hetzner','digitalocean',
+      'youtube','tiktok','google_ai','google_play','hdrezka','russia_inside','russia_outside',
+      'anime','news','porn','geoblock','block'];
+    s=m.section(form.GridSection,'group',_('Группы маршрутизации'),
+      _('Направить конкретные списки через конкретный сервер (напр. YouTube → один сервер, Meta → другой). Что не в группе — идёт через активный сервер. После изменения: «Обновить списки».'));
+    s.addremove=true; s.anonymous=false; s.nodescriptions=true;
+    o=s.option(form.Flag,'enabled',_('Вкл')); o.default='1'; o.editable=true;
+    s.option(form.Value,'label',_('Название'));
+    o=s.option(form.ListValue,'server',_('Сервер'));
+    uci.sections('mierukop','server').forEach(function(sv){
+      o.value(sv['.name'], (sv.label||sv['.name'])+' ('+(sv.address||'')+')');
+    });
+    o=s.option(form.MultiValue,'community_lists',_('Списки')); o.display_size=10;
+    LISTS.forEach(function(n){ o.value(n,n); });
+
     s=m.section(form.NamedSection,'user','policy',_('Свои правила'));
     s.anonymous=true; s.addremove=false;
     s.tab('routed',_('Через туннель'));
@@ -258,11 +274,43 @@ return view.extend({
         ])
       ]);
 
+      // ── server latency: ping every server so the user picks the best ──
+      self._pingTbl=E('div',{},E('div',{style:'opacity:.6;font-size:12px'},_('Нажмите «Пинг серверов» — измерю задержку до каждого (мс).')));
+      var serverSection=E('div',{'class':'cbi-section'},[
+        E('h3',{},_('Серверы — задержка')),
+        self._pingTbl,
+        E('div',{'class':'mk-act'},[
+          self.mkBtn('pingall','cbi-button-action',_('Пинг серверов'), function(){
+            self._pingTbl.innerHTML=''; self._pingTbl.appendChild(E('div',{style:'opacity:.6'},_('измеряю…')));
+            return self.exec(['pingall']).then(function(t){
+              var rows=(t||'').trim().split('\n').map(function(l){
+                var f=l.split('|'); return {sec:f[0],label:f[1],ip:f[2],ms:f[3],active:f[4]==='1'}; })
+                .filter(function(r){ return r.label; });
+              rows.sort(function(a,b){ var x=parseInt(a.ms),y=parseInt(b.ms);
+                if(isNaN(x))return 1; if(isNaN(y))return -1; return x-y; });
+              var best=null; rows.forEach(function(r){ if(best===null && !isNaN(parseInt(r.ms))) best=r.sec; });
+              var tbl=E('table',{'class':'table mk-st'},[ E('tr',{'class':'tr'},[
+                E('th',{'class':'th'},_('Сервер')), E('th',{'class':'th'},'IP'), E('th',{'class':'th'},_('Задержка, мс')) ]) ]);
+              rows.forEach(function(r){
+                var dead=isNaN(parseInt(r.ms)), isBest=(r.sec===best);
+                tbl.appendChild(E('tr',{'class':'tr'},[
+                  E('td',{'class':'td'}, (r.active?'● ':'')+r.label+(r.active?' '+_('(активен)'):'')+(isBest?' — '+_('лучший'):'') ),
+                  E('td',{'class':'td',style:'font-family:monospace'}, r.ip),
+                  E('td',{'class':'td'},[ E('b',{'class':dead?'mk-down':(isBest?'mk-up':'')}, r.ms) ]) ]));
+              });
+              self._pingTbl.innerHTML=''; self._pingTbl.appendChild(tbl);
+              return null;
+            });
+          })
+        ])
+      ]);
+
       var page=E('div',{},[
         E('style',{},CSS),
         statusSection,
         chartSection,
         qualSection,
+        serverSection,
         formNode
       ]);
 
