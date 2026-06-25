@@ -288,6 +288,13 @@ bring_up_tunnel() {
 
 start_service() {
 	[ "$(uci_get enabled)" = "1" ] || { log "disabled in config"; return 0; }
+	# mesh role awareness (meownet fleet): a NODE routes its internet through the
+	# main router's tunnel over the batman mesh, so it must NOT run its own
+	# mieru/hev. No /etc/meownet-role file (non-meownet router) → run normally.
+	if [ "$(cat /etc/meownet-role 2>/dev/null)" = "node" ]; then
+		log "meownet role=node — skipping tunnel (main router provides the bypass)"
+		return 0
+	fi
 	chmod 600 /etc/config/mierukop 2>/dev/null
 	local line idx kind g
 	setup_nft_all
