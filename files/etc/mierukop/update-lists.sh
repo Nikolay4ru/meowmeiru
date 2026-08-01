@@ -207,6 +207,16 @@ apply_all() {
 	# with identical content most of the time
 	if dnsmasq_full; then
 		mkdir -p "$(dirname "$DNSMASQ_CONF")"; : > "$DNSMASQ_CONF.new"
+		# AAAA is poison for policy routing: the nft sets are ipv4_addr, so an
+		# IPv6 answer can never be marked and the client leaves the tunnel (and
+		# dnsmasq logs "Could not resolve hostname" per record). Strip AAAA when
+		# there is no IPv6 upstream at all — then IPv6 answers are useless anyway
+		# and only cost Happy-Eyeballs stalls. settings.filter_aaaa: 1 force on,
+		# 0 force off, unset = auto.
+		local faaaa; faaaa=$(uci -q get $CONF.settings.filter_aaaa)
+		if [ "$faaaa" = "1" ] || { [ -z "$faaaa" ] && [ -z "$(ip -6 route show default 2>/dev/null)" ]; }; then
+			echo "filter-AAAA" >> "$DNSMASQ_CONF.new"
+		fi
 		# groups FIRST: dnsmasq honours the first nftset directive per domain, so
 		# a group's domain must not be swallowed by the default tunnel's broader
 		# lists (russia_inside contains youtube.com, instagram.com, …)
