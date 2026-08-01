@@ -168,12 +168,8 @@ setup_nft_all() {
 		idx=${line%%|*}; kind=$(echo "$line" | cut -d'|' -f2); g=$(echo "$line" | cut -d'|' -f3)
 		tun=$(t_tun "$idx"); mark=$(t_mark "$idx"); setname=$(t_set "$idx" "$kind" "$g")
 		tunset="$tunset\"$tun\", "
-		# the v6 twin exists only so dnsmasq has somewhere to put AAAA answers:
-		# without it every AAAA for a routed domain logs "nftset ... Could not
-		# resolve hostname". Nothing routes off it (no ip6 fwmark rules).
 		sets="$sets
-	set $setname { type ipv4_addr; flags interval; auto-merge; }
-	set ${setname}6 { type ipv6_addr; flags interval; auto-merge; }"
+	set $setname { type ipv4_addr; flags interval; auto-merge; }"
 		# udp/443 reject: QUIC through a TCP-transport mieru is UDP-over-TCP
 		# (double congestion control) — reject makes clients fall back to H2/TCP
 		fwd="$fwd
@@ -365,6 +361,17 @@ stop_service() {
 		ip link del "$(t_tun "$idx")" 2>/dev/null
 	done
 	teardown_nft
+	# Drop conntrack entries that still carry a tunnel mark. Their remote peer saw
+	# the tunnel's exit IP; once the tunnel is gone the same flow would continue
+	# from the WAN IP and the peer rejects it. Opportunistic — conntrack-tools is
+	# not a dependency.
+	if command -v conntrack >/dev/null 2>&1; then
+		local m
+		for line in $(tunnels); do
+			m=$(t_mark "${line%%|*}")
+			conntrack -D -m "$m" >/dev/null 2>&1
+		done
+	fi
 	# on reload the drop-in is atomically rewritten by apply_all (which restarts
 	# dnsmasq only if content changed) — removing it here would force a restart
 	if [ -z "$MK_RELOAD" ]; then

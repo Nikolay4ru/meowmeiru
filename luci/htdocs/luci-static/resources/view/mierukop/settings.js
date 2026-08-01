@@ -13,6 +13,10 @@ return lib.page({
 
     s=m.section(form.NamedSection,'settings','mierukop',_('Поведение'));
     s.anonymous=true; s.addremove=false;
+    o=s.option(form.Flag,'enabled',_('Обход включён'),
+      _('Главный выключатель. Выключено — туннели гасятся, правила маршрутизации снимаются, ВЕСЬ трафик идёт напрямую. Состояние переживает перезагрузку.'));
+    o.rmempty=false;
+
     o=s.option(form.Flag,'watchdog',_('Сторож (watchdog)'),
       _('Автоперезапуск туннеля, если он перестал пропускать трафик (проверка каждые 5 мин).'));
     o=s.option(form.Flag,'killswitch',_('Блокировка утечки (kill-switch)'),

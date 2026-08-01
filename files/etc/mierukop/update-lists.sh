@@ -160,9 +160,10 @@ emit_add_batch() {  # setname
 # append one tunnel's domain rules (resolve via tunneled DNS, add IPs to its set)
 emit_tunnel_domains() {  # setname names kind g  (stdout)
 	local setname="$1" names="$2" kind="$3" g="$4" name f d ns
-	# both families: AAAA lands in the v6 twin instead of erroring out of the
-	# ipv4 set on every AAAA query for a routed domain
-	ns="inet#mierukop#$setname,inet#mierukop#${setname}6"
+	# v4 set only. Listing a v6 twin as well makes dnsmasq fail on every A record
+	# ("Name has no usable address" against the v6 set) — worse than the AAAA
+	# noise it was meant to silence. filter-AAAA already keeps IPv6 off clients.
+	ns="inet#mierukop#$setname"
 	for name in $names; do
 		f="$CACHE/$name.domain.lst"; [ -f "$f" ] || continue
 		awk -v dns="$ROUTED_DNS" -v ns="$ns" \

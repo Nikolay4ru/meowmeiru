@@ -33,6 +33,7 @@ mierukop — policy routing over mieru (podkop-style)
 
 Usage: mierukop <command>
   start | stop | restart     manage the service
+  bypass on|off|status       master switch: off = everything goes direct
   version                    show module version
   update-check               check github for a newer version
   self-update                download + install the latest version (via tunnel)
@@ -66,6 +67,31 @@ EOF
 
 case "$1" in
 	start|stop|restart) /etc/init.d/mierukop "$1" ;;
+	bypass)
+		# master switch: "off" tears the bypass down completely AND survives a
+		# reboot (settings.enabled=0), so nothing on the router is routed through
+		# mieru until it is turned back on.
+		case "$2" in
+			off)
+				uci set $CONF.settings.enabled=0; uci commit $CONF
+				/etc/init.d/mierukop stop >/dev/null 2>&1
+				echo "обход ВЫКЛЮЧЕН — весь трафик идёт напрямую (переживёт перезагрузку)"
+				echo "включить обратно: mierukop bypass on" ;;
+			on)
+				uci set $CONF.settings.enabled=1; uci commit $CONF
+				/etc/init.d/mierukop start >/dev/null 2>&1
+				echo "обход включён" ;;
+			status|"")
+				en=$(uci -q get $CONF.settings.enabled)
+				[ "$en" = "1" ] && echo "enabled: yes" || echo "enabled: no"
+				nft list table $NFT_TABLE >/dev/null 2>&1 && echo "nft_table: present" || echo "nft_table: absent"
+				echo "ip_rules: $(ip rule show 2>/dev/null | grep -c fwmark)"
+				echo "tun_devs: $(ip -br link show 2>/dev/null | grep -c mtun)"
+				echo "processes: $(ps w | grep -cE '[m]ieru run|[h]ev-socks5')"
+				echo "marked_conns: $(grep -c 'mark=41' /proc/net/nf_conntrack 2>/dev/null)"
+				echo "dnsmasq_dropin: $(ls /tmp/dnsmasq.d/mierukop*.conf /tmp/dnsmasq.*.d/mierukop*.conf 2>/dev/null | wc -l)" ;;
+			*) echo "usage: mierukop bypass [on|off|status]"; exit 1 ;;
+		esac ;;
 	status)
 		sv=$(active_server)
 		echo "version: $VERSION"
