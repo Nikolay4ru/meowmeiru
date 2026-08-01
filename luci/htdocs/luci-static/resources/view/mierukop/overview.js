@@ -45,7 +45,7 @@ return lib.page({
       E('div',{'class':'mk-hint'},_('Внешний IP каждого туннеля (по умолчанию + группы).')),
       self._tuns,
       E('div',{'class':'mk-act'},[
-        self.mkBtn('tunref','cbi-button-action',_('Обновить'), function(){ return self.loadTunnels(); })
+        self.mkBtn('tunref','cbi-button-action',_('Обновить'), function(){ return self.loadTunnels(true); })
       ])
     ]);
 
@@ -113,12 +113,15 @@ return lib.page({
     });
 
     self.refreshStatus(); self.loadTunnels(); self.drawPingChart();
-    poll.add(function(){ return self.refreshStatus(); }, 5);
-    poll.add(function(){ self.drawPingChart();
-      return self.exec(['stats']).then(function(t){
-        var p=self.parse(t); self.pushSample(p.rx_rate, p.tx_rate);
+    // one combined 5s poll (ui-status carries the traffic rates too); the ping
+    // history only gains a point per pingall run — redrawing it every 3s was
+    // ~100 wasted forks/min
+    poll.add(function(){
+      return self.refreshStatus().then(function(s){
+        if(s && s.rx_rate!=null) self.pushSample(s.rx_rate, s.tx_rate);
       });
-    }, 3);
+    }, 5);
+    poll.add(function(){ return self.drawPingChart(); }, 60);
 
     return page;
   },

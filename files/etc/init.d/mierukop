@@ -97,8 +97,11 @@ _servers_json() {  # args: server sections
 }
 
 write_mieru_conf_f() {  # file profile rpc socks user pass servers_json
-	local f="$1" prof="$2" rpc="$3" socks="$4" user="$5" pass="$6" sj="$7" mux
+	local f="$1" prof="$2" rpc="$3" socks="$4" user="$5" pass="$6" sj="$7" mux lvl
 	mux=$(uci_get multiplexing); [ -n "$mux" ] || mux=MULTIPLEXING_MIDDLE
+	# WARNING by default: on INFO all three mieru daemons log every connection
+	# into syslog (constant logd churn); set settings.mieru_loglevel=INFO to debug
+	lvl=$(uci_get mieru_loglevel); [ -n "$lvl" ] || lvl=WARNING
 	mkdir -p "$RUN_DIR"
 	cat > "$f" <<EOF
 {
@@ -113,7 +116,7 @@ write_mieru_conf_f() {  # file profile rpc socks user pass servers_json
   "rpcPort": $rpc,
   "socks5Port": $socks,
   "socks5ListenLAN": false,
-  "loggingLevel": "INFO"
+  "loggingLevel": "$lvl"
 }
 EOF
 	chmod 600 "$f" 2>/dev/null
@@ -158,20 +161,25 @@ setup_nft_all() {
 		tun=$(t_tun "$idx"); mark=$(t_mark "$idx"); setname=$(t_set "$idx" "$kind" "$g")
 		sets="$sets
 	set $setname { type ipv4_addr; flags interval; auto-merge; }"
+		# udp/443 reject: QUIC through a TCP-transport mieru is UDP-over-TCP
+		# (double congestion control) — reject makes clients fall back to H2/TCP
 		fwd="$fwd
 		oifname \"$tun\" tcp flags syn tcp option maxseg size set 1360
 		iifname \"$tun\" tcp flags syn tcp option maxseg size set 1360
+		oifname \"$tun\" udp dport 443 reject
 		oifname \"$tun\" accept
 		iifname \"$tun\" accept"
 		post="$post
 		oifname \"$tun\" masquerade"
+		# `return` on group rules: without it the default-set rule below would
+		# overwrite the group mark when an address sits in both sets
 		if [ "$kind" = default ]; then
-			defrule="		ip daddr @$setname meta mark set $mark ct mark set $mark"
+			defrule="		ip daddr @$setname meta mark set $mark ct mark set $mark return"
 		else
 			pre="$pre
-		ip daddr @$setname meta mark set $mark ct mark set $mark"
+		ip daddr @$setname meta mark set $mark ct mark set $mark return"
 			out="$out
-		ip daddr @$setname meta mark set $mark ct mark set $mark"
+		ip daddr @$setname meta mark set $mark ct mark set $mark return"
 		fi
 	done
 	nft -f - <<EOF
@@ -179,12 +187,14 @@ table $NFT_TABLE {
 $sets
 	chain prerouting {
 		type filter hook prerouting priority mangle; policy accept;
+		ct mark != 0 meta mark set ct mark return
 		ip daddr @mierukop_direct return
 $pre
 $defrule
 	}
 	chain output {
 		type route hook output priority mangle; policy accept;
+		ct mark != 0 meta mark set ct mark return
 		ip daddr @mierukop_direct return
 $out
 $defrule
@@ -202,16 +212,21 @@ EOF
 	if [ "$(uci_get dns_hijack)" != "0" ]; then
 		local lan ip; lan=$(uci_get lan_ifname); [ -n "$lan" ] || lan=br-lan
 		ip=$(ip -4 addr show "$lan" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
-		nft -f - <<EOF2
+		# empty $ip would make nft -f fail silently and leave clients unhijacked
+		if [ -n "$ip" ]; then
+			nft -f - <<EOF2
 table $NFT_TABLE {
 	chain dns_redirect {
 		type nat hook prerouting priority dstnat - 5; policy accept;
-		iifname "$lan" ip daddr != $ip udp dport 53 redirect to :53
-		iifname "$lan" ip daddr != $ip tcp dport 53 redirect to :53
-		iifname "$lan" tcp dport 853 reject
+		iifname "$lan" ip daddr != $ip meta l4proto { tcp, udp } th dport 53 redirect to :53
+		iifname "$lan" tcp dport 853 reject with tcp reset
+		iifname "$lan" udp dport 853 reject
 	}
 }
 EOF2
+		else
+			log "dns_hijack: no IPv4 on $lan yet — hijack NOT installed"
+		fi
 	fi
 }
 teardown_nft() { nft delete table $NFT_TABLE 2>/dev/null; }
@@ -241,13 +256,18 @@ setup_cron() {
 	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d;/mierukop auto-best/d;/mierukop sub-refresh/d' "$cron"
 	[ "$(uci_get watchdog)" = "1" ] && echo "*/5 * * * * /etc/mierukop/watchdog.sh" >> "$cron"
 	echo "* * * * * /usr/bin/mierukop sample" >> "$cron"
-	echo "*/10 * * * * /usr/bin/mierukop pingall >/dev/null 2>&1" >> "$cron"
-	# auto-pick fastest server (no-op unless auto_best=1)
-	echo "*/15 * * * * /usr/bin/mierukop auto-best >/dev/null 2>&1" >> "$cron"
-	# daily subscription re-fetch (no-op unless sub_auto=1) — rotates blocked IPs
-	echo "41 4 * * * /usr/bin/mierukop sub-refresh >/dev/null 2>&1" >> "$cron"
-	# weekly self-update check (only updates if auto_update=1 and a newer version exists)
-	echo "17 4 * * 6 /usr/bin/mierukop update-auto >/dev/null 2>&1" >> "$cron"
+	# feature-gated entries only when the feature is on — an entry that execs the
+	# CLI just to exit 0 still costs crond->sh->uci forks every interval
+	if [ "$(uci_get auto_best)" = "1" ]; then
+		echo "*/10 * * * * /usr/bin/mierukop pingall >/dev/null 2>&1" >> "$cron"
+		echo "*/15 * * * * /usr/bin/mierukop auto-best >/dev/null 2>&1" >> "$cron"
+	else
+		echo "*/30 * * * * /usr/bin/mierukop pingall >/dev/null 2>&1" >> "$cron"
+	fi
+	[ "$(uci_get sub_auto)" = "1" ] && \
+		echo "41 4 * * * /usr/bin/mierukop sub-refresh >/dev/null 2>&1" >> "$cron"
+	[ "$(uci_get auto_update)" = "1" ] && \
+		echo "17 4 * * 6 /usr/bin/mierukop update-auto >/dev/null 2>&1" >> "$cron"
 	iv=$(uci_get update_interval)
 	[ -n "$iv" ] && [ "$iv" != "0" ] && echo "23 5 */$(( iv/24>0 ? iv/24 : 1 )) * * /etc/mierukop/update-lists.sh download" >> "$cron"
 	/etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1
@@ -273,9 +293,12 @@ bring_up_tunnel() {
 	write_mieru_conf_f "$conf" "$prof" "$rpc" "$socks" "$user" "$pass" "$sj"
 	write_hev_conf_f "$hev" "$up" "$tun" "$addr" "$socks" "$mark" "$table"
 	HOME="$home" /usr/bin/mieru apply config "$conf" >/dev/null 2>&1
+	# group tunnels carry far fewer sessions than default — a lower Go memory
+	# ceiling keeps 3 instances from claiming 144MiB of a 256MiB router
+	local gml=48MiB; [ "$kind" = default ] || gml=32MiB
 	procd_open_instance "$mi"
 	procd_set_param command /usr/bin/mieru run
-	procd_set_param env HOME="$home" GOGC=20 GOMEMLIMIT=48MiB
+	procd_set_param env HOME="$home" GOGC=20 GOMEMLIMIT=$gml
 	procd_set_param respawn 3600 5 0
 	procd_close_instance
 	procd_open_instance "$ti"
@@ -317,11 +340,15 @@ stop_service() {
 		ip link del "$(t_tun "$idx")" 2>/dev/null
 	done
 	teardown_nft
-	rm -f /tmp/dnsmasq.d/mierukop*.conf /tmp/dnsmasq.*.d/mierukop*.conf 2>/dev/null
-	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d;/mierukop auto-best/d;/mierukop sub-refresh/d' /etc/crontabs/root 2>/dev/null
-	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	# on reload the drop-in is atomically rewritten by apply_all (which restarts
+	# dnsmasq only if content changed) — removing it here would force a restart
+	if [ -z "$MK_RELOAD" ]; then
+		rm -f /tmp/dnsmasq.d/mierukop*.conf /tmp/dnsmasq.*.d/mierukop*.conf 2>/dev/null
+		sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d;/mierukop auto-best/d;/mierukop sub-refresh/d' /etc/crontabs/root 2>/dev/null
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	fi
 	log "stopped"
 }
 
-reload_service() { stop; start; }
+reload_service() { MK_RELOAD=1; stop; MK_RELOAD=; start; }
 service_triggers() { procd_add_reload_trigger "$CONF"; }

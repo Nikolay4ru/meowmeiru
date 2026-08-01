@@ -4,6 +4,13 @@
 'require fs';
 'require ui';
 'require uci';
+'require poll';
+
+// pause ALL polling while the browser tab is hidden — LuCI's poll.js keeps
+// hammering the router with exec chains from a backgrounded tab otherwise
+document.addEventListener('visibilitychange', function(){
+  if (document.hidden) poll.stop(); else poll.start();
+});
 
 /*
  * Shared helpers for the meowMieru (mierukop) multi-page LuCI app.
@@ -187,9 +194,10 @@ var Base = baseclass.extend({
     });
   },
 
-  loadTunnels: function(){
+  loadTunnels: function(force){
     var self=this; if(!self._tuns) return Promise.resolve();
-    return self.exec(['tunnels']).then(function(t){
+    // plain call uses the CLI's 300s exit-IP cache; force=true re-probes
+    return self.exec(force?['tunnels','fresh']:['tunnels']).then(function(t){
       self._tuns.innerHTML='';
       (t||'').trim().split('\n').forEach(function(l){
         if(!l) return; var f=l.split('|'); if(f.length<4) return;
@@ -256,7 +264,8 @@ var Base = baseclass.extend({
   refreshStatus: function(){
     var self=this;
     if(!self._v && !self._badge) return Promise.resolve();   // page has no live status widgets
-    return this.exec(['status']).then(function(out){
+    // ui-status = status + traffic rates in one CLI fork (the 5s hot path)
+    return this.exec(['ui-status']).then(function(out){
       var s=self.parse(out);
       var svc=(s.service==='running'), mieru=(s.mieru==='up'), tun=(s.tun2socks==='up');
       var connected=svc&&mieru&&tun;

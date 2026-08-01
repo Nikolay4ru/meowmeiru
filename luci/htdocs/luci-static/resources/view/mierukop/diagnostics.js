@@ -32,7 +32,8 @@ return lib.page({
     var page=E('div',{},[ E('style',{},self.CSS), self.brandBar(_('диагностика')), selfcheckSection, clientsSection ]);
 
     self.loadClients(); self.refreshStatus();
-    poll.add(function(){ self.refreshStatus(); return self.loadClients(); }, 15);
+    // clients does a full nf_conntrack pass — 30s is plenty for a dashboard
+    poll.add(function(){ self.refreshStatus(); return self.loadClients(); }, 30);
     return page;
   },
 

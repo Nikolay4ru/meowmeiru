@@ -1,3 +1,4 @@
 *.tmp
 *.bak
 files/etc/mierukop/lists/*.lst
+!files/etc/mierukop/lists/exclude.lst

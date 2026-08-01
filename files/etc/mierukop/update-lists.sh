@@ -57,6 +57,30 @@ youtube tiktok google_ai google_play hdrezka russia_inside russia_outside anime 
 dl() { curl -fs --max-time 60 --proxy "$PROXY" -o "$2" "$1" 2>/dev/null; }
 is_cidr() { case "$1" in ''|*[!0-9./]*) return 1 ;; *) return 0 ;; esac; }
 add_to() { is_cidr "$2" || return 0; nft add element $NFT_TABLE "$1" "{ $2 }" 2>/dev/null; }
+
+# CDN-мегаблоки (Cloudflare и т.п.), которые community-списки тащат в туннель
+# целиком — из-за них ВЕСЬ трафик к этим CDN шёл через VPN. Точные CIDR-строки
+# из $CACHE/exclude.lst вычёркиваются из subnet-списков при загрузке.
+EXCLUDE_LST="$CACHE/exclude.lst"
+filter_excluded() {
+	if [ -s "$EXCLUDE_LST" ]; then grep -vxF -f "$EXCLUDE_LST"; else cat; fi
+}
+# Second line of defence: drop any net broader than /$MIN_PFX regardless of the
+# exact CIDR spelling (exclude.lst is literal-match and breaks when upstream
+# re-slices its blocks). Nets that SHOULD stay big go into allow-big.lst.
+# /16 keeps 157.240.0.0/16 (Meta AS), 66.22.192.0/18 (Discord voice),
+# 162.159.128.0/19 (Discord gateway) — cuts CF /12-/15 and GCP /11-/14.
+MIN_PFX="$(uci -q get $CONF.settings.subnet_min_prefix || echo 16)"
+ALLOW_BIG="$CACHE/allow-big.lst"
+filter_megablocks() {
+	awk -v min="$MIN_PFX" -v allow="$ALLOW_BIG" '
+	BEGIN { while ((getline l < allow) > 0) { sub(/#.*/,"",l); gsub(/[ \t\r]/,"",l); if (l!="") ok[l]=1 } }
+	{ sub(/\r$/,""); c=$1
+	  if (c=="" || c ~ /^#/) next
+	  p=32; if (match(c, /\/[0-9]+$/)) p=substr(c, RSTART+1)+0
+	  if (p>=min || (c in ok)) print c; else n++ }
+	END { if (n) system("logger -t mierukop-lists \"megablock filter: dropped " n " net(s) broader than /" min "\"") }'
+}
 dnsmasq_full() { dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'nftset'; }
 
 GOOGLE_SUBNETS="64.233.160.0/19 66.102.0.0/20 66.249.64.0/19 72.14.192.0/18 \
@@ -86,26 +110,48 @@ all_names() {
 }
 
 download_name() {
-	local name="$1" kind path out
+	local name="$1" kind path out tmp
 	community_entries "$name" | while IFS=: read -r kind path; do
 		[ -n "$path" ] || continue
-		out="$CACHE/${name}.${kind}.lst"
-		if dl "$REPO/$path" "$out.tmp" && [ -s "$out.tmp" ]; then
-			mv "$out.tmp" "$out"; log "downloaded $name/$kind ($(grep -c . "$out") lines)"
-		else rm -f "$out.tmp"; log "download failed: $name/$kind (keeping cache)"; fi
+		out="$CACHE/${name}.${kind}.lst"; tmp="/tmp/mierukop/dl.$$"
+		if dl "$REPO/$path" "$tmp" && [ -s "$tmp" ]; then
+			# $CACHE is overlay flash — rewrite only when content actually changed
+			if cmp -s "$tmp" "$out" 2>/dev/null; then rm -f "$tmp"
+			else cat "$tmp" > "$out"; rm -f "$tmp"; log "downloaded $name/$kind ($(grep -c . "$out") lines)"; fi
+		else rm -f "$tmp"; log "download failed: $name/$kind (keeping cache)"; fi
 	done
 }
 
-# load one tunnel's subnets into its set
-load_tunnel_subnets() {  # setname names kind g
-	local setname="$1" names="$2" kind="$3" g="$4" name net f
+# one tunnel's raw subnet CIDRs on stdout (community lists + custom + user)
+collect_tunnel_subnets() {  # names kind g
+	local names="$1" kind="$2" g="$3" name net f
 	for name in $names; do
 		f="$CACHE/$name.subnet.lst"; [ -f "$f" ] || continue
-		while read -r net; do case "$net" in ""|"#"*) continue ;; esac; add_to "$setname" "$net"; done < "$f"
+		filter_excluded < "$f" | filter_megablocks
 	done
+	if [ "$kind" = default ]; then
+		for f in "$CACHE"/custom_*.subnet.lst; do
+			[ -f "$f" ] || continue
+			filter_excluded < "$f" | filter_megablocks
+		done
+	fi
+	# static Google nets route ALL of Google (Search/Maps/Play) into the tunnel —
+	# off unless explicitly enabled; youtube domains still route via dnsmasq nftset
 	case " $names " in *" youtube "*|*" google_ai "*|*" google_play "*)
-		for net in $GOOGLE_SUBNETS; do add_to "$setname" "$net"; done ;; esac
-	for net in $(t_subnets "$kind" "$g"); do add_to "$setname" "$net"; done
+		if [ "$(uci -q get $CONF.settings.youtube_static_subnets)" = "1" ]; then
+			for net in $GOOGLE_SUBNETS; do echo "$net"; done
+		fi ;;
+	esac
+	for net in $(t_subnets "$kind" "$g"); do echo "$net"; done
+}
+
+# batched "add element" nft commands for a set, CIDRs on stdin (chunks of 400)
+emit_add_batch() {  # setname
+	grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?$' | sort -u | \
+	awk -v t="$NFT_TABLE" -v s="$1" '
+		{ a = a (n ? ", " : "") $0
+		  if (++n == 400) { printf "add element %s %s { %s }\n", t, s, a; a=""; n=0 } }
+		END { if (n) printf "add element %s %s { %s }\n", t, s, a }'
 }
 
 # append one tunnel's domain rules (resolve via tunneled DNS, add IPs to its set)
@@ -123,36 +169,69 @@ emit_tunnel_domains() {  # setname names kind g  (stdout)
 }
 
 apply_all() {
-	mkdir -p "$CACHE"
-	local line idx kind g setname names total=0
-	# subnets per tunnel
+	mkdir -p "$CACHE" /tmp/mierukop
+	local line idx kind g setname names total=0 B=/tmp/mierukop/nft.batch net dns
+	# rebuild sets from scratch — иначе удалённые/исключённые подсети остаются
+	# в наборах навсегда. flush+add идут ОДНОЙ nft-транзакцией: нет ни окна
+	# пустых наборов (трафик не утекает мимо туннеля), ни форка на каждый CIDR.
+	: > "$B"
 	for line in $(tunnels); do
 		idx=${line%%|*}; kind=$(echo "$line"|cut -d'|' -f2); g=$(echo "$line"|cut -d'|' -f3)
 		setname=$(t_set "$idx" "$kind" "$g"); names=$(t_lists "$kind" "$g")
-		load_tunnel_subnets "$setname" "$names" "$kind" "$g"
+		echo "flush set $NFT_TABLE $setname" >> "$B"
+		collect_tunnel_subnets "$names" "$kind" "$g" | emit_add_batch "$setname" >> "$B"
 	done
+	echo "flush set $NFT_TABLE mierukop_direct" >> "$B"
 	# default user exclusions → DIRECT set (bypass), routed DNS → default set
-	for net in $(uci -q get $CONF.user.exclude_subnet); do add_to mierukop_direct "$net"; done
-	for dns in $ROUTED_DNS; do add_to "$NFT_SET" "$dns/32"; done
-	# domain drop-in (all tunnels)
-	if dnsmasq_full; then
-		mkdir -p "$(dirname "$DNSMASQ_CONF")"; : > "$DNSMASQ_CONF"
+	for net in $(uci -q get $CONF.user.exclude_subnet); do
+		is_cidr "$net" && echo "add element $NFT_TABLE mierukop_direct { $net }" >> "$B"
+	done
+	for dns in $ROUTED_DNS; do echo "add element $NFT_TABLE $NFT_SET { $dns/32 }" >> "$B"; done
+	if ! nft -f "$B" 2>/dev/null; then
+		log "atomic set load failed: $(nft -c -f "$B" 2>&1 | head -1) — falling back per-element"
 		for line in $(tunnels); do
 			idx=${line%%|*}; kind=$(echo "$line"|cut -d'|' -f2); g=$(echo "$line"|cut -d'|' -f3)
 			setname=$(t_set "$idx" "$kind" "$g"); names=$(t_lists "$kind" "$g")
-			emit_tunnel_domains "$setname" "$names" "$kind" "$g" >> "$DNSMASQ_CONF"
+			nft flush set $NFT_TABLE "$setname" 2>/dev/null
+			collect_tunnel_subnets "$names" "$kind" "$g" | while read -r net; do add_to "$setname" "$net"; done
+		done
+		nft flush set $NFT_TABLE mierukop_direct 2>/dev/null
+		for net in $(uci -q get $CONF.user.exclude_subnet); do add_to mierukop_direct "$net"; done
+		for dns in $ROUTED_DNS; do add_to "$NFT_SET" "$dns/32"; done
+	fi
+	# domain drop-in (all tunnels) — restart dnsmasq ONLY if content changed:
+	# a restart drops the whole LAN's DNS cache, and watchdog/self-heal re-applies
+	# with identical content most of the time
+	if dnsmasq_full; then
+		mkdir -p "$(dirname "$DNSMASQ_CONF")"; : > "$DNSMASQ_CONF.new"
+		# groups FIRST: dnsmasq honours the first nftset directive per domain, so
+		# a group's domain must not be swallowed by the default tunnel's broader
+		# lists (russia_inside contains youtube.com, instagram.com, …)
+		for line in $(tunnels | sort -t'|' -k1 -rn); do
+			idx=${line%%|*}; kind=$(echo "$line"|cut -d'|' -f2); g=$(echo "$line"|cut -d'|' -f3)
+			setname=$(t_set "$idx" "$kind" "$g"); names=$(t_lists "$kind" "$g")
+			emit_tunnel_domains "$setname" "$names" "$kind" "$g" >> "$DNSMASQ_CONF.new"
 		done
 		# default user exclusions → direct set
 		for d in $(uci -q get $CONF.user.exclude_domain); do
 			echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/inet#mierukop#mierukop_direct"
-		done >> "$DNSMASQ_CONF"
-		total=$(grep -c '^nftset=' "$DNSMASQ_CONF" 2>/dev/null)
-		/etc/init.d/dnsmasq restart >/dev/null 2>&1
-		log "domain drop-in: $total entries across $(tunnels|wc -l) tunnel(s)"
+		done >> "$DNSMASQ_CONF.new"
+		total=$(grep -c '^nftset=' "$DNSMASQ_CONF.new" 2>/dev/null)
+		if cmp -s "$DNSMASQ_CONF.new" "$DNSMASQ_CONF" 2>/dev/null; then
+			rm -f "$DNSMASQ_CONF.new"
+		else
+			mv "$DNSMASQ_CONF.new" "$DNSMASQ_CONF"
+			/etc/init.d/dnsmasq restart >/dev/null 2>&1
+			log "domain drop-in: $total entries across $(tunnels|wc -l) tunnel(s)"
+		fi
 	else
 		log "dnsmasq-full required for domain lists — skipping (subnets still work)"; rm -f "$DNSMASQ_CONF"
 	fi
-	log "apply done: $(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9.]+/[0-9]+' | wc -l) subnets in default set"
+	# cache the count: the LuCI status poll reads this file instead of dumping
+	# the whole set on every tick
+	total=$(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9.]+/[0-9]+' | wc -l)
+	echo "$total" > /tmp/mierukop/subnets.count
+	log "apply done: $total subnets in default set"
 }
 
 download_custom() {
@@ -160,14 +239,18 @@ download_custom() {
 	config_get_bool enabled "$section" enabled 1
 	config_get url "$section" url; config_get type "$section" type subnet
 	[ "$enabled" = "1" ] && [ -n "$url" ] && [ "$type" = "subnet" ] || return 0
-	dl "$url" "$CACHE/custom_${section}.subnet.lst.tmp" && mv "$CACHE/custom_${section}.subnet.lst.tmp" "$CACHE/custom_${section}.subnet.lst"
+	local out="$CACHE/custom_${section}.subnet.lst" tmp="/tmp/mierukop/dlc.$$"
+	if dl "$url" "$tmp" && [ -s "$tmp" ]; then
+		cmp -s "$tmp" "$out" 2>/dev/null || cat "$tmp" > "$out"
+	fi
+	rm -f "$tmp"
 }
 
 config_load "$CONF"
 
 case "${1:-apply}" in
 	download)
-		mkdir -p "$CACHE"
+		mkdir -p "$CACHE" /tmp/mierukop
 		for name in $(all_names); do download_name "$name"; done
 		config_foreach download_custom list_source
 		apply_all ;;

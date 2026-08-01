@@ -6,10 +6,10 @@ NFT_SET="mierukop_subnets"
 SOCKS_PORT="$(uci -q get $CONF.settings.socks_port || echo 1180)"
 PROXY="socks5h://127.0.0.1:${SOCKS_PORT}"
 TUN="$(uci -q get $CONF.settings.tun_name || echo mtun0)"
-STATE_DIR="/tmp/mierukop"; mkdir -p "$STATE_DIR" 2>/dev/null
+STATE_DIR="/tmp/mierukop"; [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" 2>/dev/null
 TRAFFIC_LOG="$STATE_DIR/traffic.csv"
 VER_FILE="/etc/mierukop/VERSION"
-VERSION="$(cat "$VER_FILE" 2>/dev/null || echo 0.0.0)"
+VERSION=0.0.0; [ -r "$VER_FILE" ] && read -r VERSION < "$VER_FILE"
 REPO_RAW="${MIERUKOP_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main}"
 # fetch a repo file: try via the tunnel first (raw.githubusercontent is DPI-blocked
 # in RU), then direct as a fallback.
@@ -77,6 +77,32 @@ case "$1" in
 		echo "servers: $(server_list | wc -w)"
 		echo "subnets: $(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | wc -l)"
 		;;
+	ui-status)
+		# combined dashboard poll for LuCI: status + traffic rates in ONE fork —
+		# avoids the init.d-running shell (rc.common+procd source) and a full
+		# nft set dump every 5s tick
+		rx=0; tx=0
+		[ -r /sys/class/net/$TUN/statistics/rx_bytes ] && read rx < /sys/class/net/$TUN/statistics/rx_bytes
+		[ -r /sys/class/net/$TUN/statistics/tx_bytes ] && read tx < /sys/class/net/$TUN/statistics/tx_bytes
+		now=$(date +%s); pf="$STATE_DIR/stats.prev"; pt=0; prx=0; ptx=0
+		[ -f "$pf" ] && read pt prx ptx < "$pf"
+		echo "$now $rx $tx" > "$pf"
+		dt=$((now-pt)); [ "$dt" -lt 1 ] && dt=1
+		rrate=0; trate=0
+		if [ "$pt" -gt 0 ] && [ "$rx" -ge "$prx" ]; then rrate=$(((rx-prx)/dt)); trate=$(((tx-ptx)/dt)); fi
+		sv=$(active_server)
+		svc=stopped
+		ubus -S call service list '{"name":"mierukop"}' 2>/dev/null | grep -q '"running":true' && svc=running
+		cnt=—; [ -r "$STATE_DIR/subnets.count" ] && read -r cnt < "$STATE_DIR/subnets.count"
+		echo "version: $VERSION"
+		echo "service: $svc"
+		echo "mieru:   $(pgrep -f '/usr/bin/mieru' >/dev/null && echo up || echo down)"
+		echo "tun2socks: $(pgrep -f hev-socks5-tunnel >/dev/null && echo up || echo down)"
+		echo "server:  $(srv_get "$sv" label) ($(srv_get "$sv" address):$(srv_get "$sv" port))"
+		echo "subnets: $cnt"
+		echo "rx_rate: $rrate"
+		echo "tx_rate: $trate"
+		;;
 	test)
 		echo -n "tunnel exit IP: "
 		curl -fs --max-time 12 --proxy "$PROXY" https://api.ipify.org 2>/dev/null || echo "FAIL"
@@ -103,23 +129,31 @@ case "$1" in
 			a=0; [ "$s" = "$act" ] && a=1
 			echo "$s|${lbl:-$s}|$ip|${rtt:-—}|$a"
 		done; } | tee "$STATE_DIR/ping.cache"
+		# latency trend + ring-buffer trims live here (not in the every-minute
+		# sample): the values only change when this cache does
+		pm=$(awk -F'|' '$5==1 && $4 ~ /^[0-9]+$/{print $4; exit}' "$STATE_DIR/ping.cache" 2>/dev/null)
+		[ -n "$pm" ] && echo "$(date +%s),$pm" >> "$STATE_DIR/ping.csv"
+		for f in "$TRAFFIC_LOG" "$STATE_DIR/ping.csv"; do
+			[ -f "$f" ] && [ "$(wc -l < "$f")" -gt 400 ] && { tail -n 180 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
+		done
+		:
 		;;
 	pingcache)
 		cat "$STATE_DIR/ping.cache" 2>/dev/null || true ;;
 	clients)
 		# LAN devices + their connections, and how many are routed through a tunnel
 		# (conntrack mark != 0). Output: ip|host|conns|routed|bytes
+		# single awk pass joining dhcp.leases — no per-client forks (LuCI polls this)
 		LAN=$(ip -4 -o addr show br-lan 2>/dev/null | awk "{print \$4}" | head -1)
-		pfx=$(echo "$LAN" | cut -d/ -f1 | cut -d. -f1-3); selfip=$(echo "$LAN" | cut -d/ -f1)
-		awk -v pfx="$pfx." -v selfip="$selfip" '
+		selfip=${LAN%/*}; pfx=${selfip%.*}.
+		leases=/tmp/dhcp.leases; [ -f "$leases" ] || leases=/dev/null
+		awk -v pfx="$pfx" -v selfip="$selfip" -v lf="$leases" '
+		  FILENAME==lf { if ($3!="" && $4!="" && $4!="*") h[$3]=$4; next }
 		  { src=""; mk=0; b=0;
 		    for(i=1;i<=NF;i++){ if($i~/^src=/&&src==""){src=substr($i,5)} if($i~/^mark=/){mk=substr($i,6)} if($i~/^bytes=/){b+=substr($i,7)} }
 		    if(index(src,pfx)==1 && src!=selfip){ c[src]++; by[src]+=b; if(mk!=0&&mk!="")r[src]++ } }
-		  END{ for(s in c) print s"|"c[s]"|"(r[s]+0)"|"by[s] }' /proc/net/nf_conntrack 2>/dev/null | sort -t'|' -k3 -rn | while IFS='|' read ip conns routed bytes; do
-			host=$(awk -v ip="$ip" "\$3==ip{print \$4}" /tmp/dhcp.leases 2>/dev/null | head -1)
-			[ -n "$host" ] && [ "$host" != "*" ] || host="?"
-			echo "$ip|$host|$conns|$routed|$bytes"
-		done
+		  END{ for(s in c){ host=(s in h)?h[s]:"?"; print s"|"host"|"c[s]"|"(r[s]+0)"|"by[s] } }' \
+		  "$leases" /proc/net/nf_conntrack 2>/dev/null | sort -t'|' -k4 -rn
 		;;
 	best-server)
 		[ -s "$STATE_DIR/ping.cache" ] || /usr/bin/mierukop pingall >/dev/null 2>&1
@@ -146,12 +180,24 @@ case "$1" in
 		;;
 	tunnels)
 		# per-tunnel live status: name|servers|socks|exit
+		# exit IP cached 300s — Overview render was firing N sequential external
+		# HTTPS probes (8s timeout each) on every page open; "fresh" bypasses
 		base=$(uci -q get $CONF.settings.socks_port || echo 1180)
-		ex=$(curl -fs --socks5-hostname 127.0.0.1:$base --max-time 8 https://api.ipify.org 2>/dev/null)
+		exit_ip() {
+			c="$STATE_DIR/exit.$1"
+			if [ "$2" != "fresh" ] && [ -f "$c" ]; then
+				mt=$(date -r "$c" +%s 2>/dev/null || echo 0)
+				if [ $(( $(date +%s) - mt )) -lt 300 ]; then cat "$c"; return; fi
+			fi
+			x=$(curl -fs --socks5-hostname 127.0.0.1:$1 --max-time 8 https://api.ipify.org 2>/dev/null)
+			[ -n "$x" ] && echo "$x" > "$c"
+			echo "$x"
+		}
+		ex=$(exit_ip "$base" "$2")
 		echo "default|$(srv_get "$(active_server)" label)|$base|${ex:-—}"
 		i=0; for g in $(group_list); do [ "$(grp_get "$g" enabled)" = "0" ] && continue; i=$((i+1)); sp=$((base+i))
 			srvs=""; for s in $(grp_get "$g" server); do srvs="$srvs $(srv_get "$s" label)"; done
-			ex=$(curl -fs --socks5-hostname 127.0.0.1:$sp --max-time 8 https://api.ipify.org 2>/dev/null)
+			ex=$(exit_ip "$sp" "$2")
 			echo "$(grp_get "$g" label) [$(grp_get "$g" community_lists)]|${srvs# }|$sp|${ex:-—}"
 		done
 		;;
@@ -188,6 +234,7 @@ case "$1" in
 			"files/etc/init.d/mierukop:initd" \
 			"files/etc/mierukop/update-lists.sh:ul" \
 			"files/etc/mierukop/watchdog.sh:wd" \
+			"files/etc/mierukop/lists/exclude.lst:excl" \
 			"files/usr/bin/mierukop:cli" \
 			"luci/htdocs/luci-static/resources/mierukop/lib.js:lib" \
 			"luci/htdocs/luci-static/resources/view/mierukop/overview.js:v_overview" \
@@ -207,6 +254,7 @@ case "$1" in
 		[ "$ok" = 1 ] || { echo "update aborted (download/sanity failed) — current $VERSION kept"; rm -rf "$d"; exit 1; }
 		cp "$d/initd" /etc/init.d/mierukop; cp "$d/ul" /etc/mierukop/update-lists.sh
 		cp "$d/wd" /etc/mierukop/watchdog.sh; cp "$d/cli" /usr/bin/mierukop
+		mkdir -p /etc/mierukop/lists; cp "$d/excl" /etc/mierukop/lists/exclude.lst
 		mkdir -p /www/luci-static/resources/mierukop /www/luci-static/resources/view/mierukop
 		cp "$d/lib" /www/luci-static/resources/mierukop/lib.js
 		for v in overview servers routing diagnostics settings; do cp "$d/v_$v" "/www/luci-static/resources/view/mierukop/$v.js"; done
@@ -271,9 +319,12 @@ case "$1" in
 		echo "rx_rate: $rrate"; echo "tx_rate: $trate"
 		;;
 	sample)
-		# called by cron every minute — append rx/tx rate to a ring buffer
-		rx=$(cat /sys/class/net/$TUN/statistics/rx_bytes 2>/dev/null || echo 0)
-		tx=$(cat /sys/class/net/$TUN/statistics/tx_bytes 2>/dev/null || echo 0)
+		# called by cron every minute — append-only (builtin read, no forks);
+		# ring-buffer trimming happens in pingall, latency trend too (it only
+		# changes when ping.cache does)
+		[ -r /sys/class/net/$TUN/statistics/rx_bytes ] || exit 0
+		read rx < /sys/class/net/$TUN/statistics/rx_bytes
+		read tx < /sys/class/net/$TUN/statistics/tx_bytes
 		now=$(date +%s); pf="$STATE_DIR/sample.prev"; pt=0; prx=0; ptx=0
 		[ -f "$pf" ] && read pt prx ptx < "$pf"
 		echo "$now $rx $tx" > "$pf"
@@ -281,15 +332,8 @@ case "$1" in
 		dt=$((now-pt)); [ "$dt" -lt 1 ] && dt=1
 		[ "$rx" -ge "$prx" ] || { prx=$rx; ptx=$tx; }
 		echo "$now,$(((rx-prx)/dt)),$(((tx-ptx)/dt))" >> "$TRAFFIC_LOG"
-		tail -n 180 "$TRAFFIC_LOG" > "$TRAFFIC_LOG.tmp" 2>/dev/null && mv "$TRAFFIC_LOG.tmp" "$TRAFFIC_LOG"
-		# also record the active server's latency (from the ping cache) as a trend
-		pm=$(awk -F'|' '$5==1 && $4 ~ /^[0-9]+$/{print $4; exit}' "$STATE_DIR/ping.cache" 2>/dev/null)
-		if [ -n "$pm" ]; then
-			echo "$now,$pm" >> "$STATE_DIR/ping.csv"
-			tail -n 180 "$STATE_DIR/ping.csv" > "$STATE_DIR/ping.csv.tmp" 2>/dev/null && mv "$STATE_DIR/ping.csv.tmp" "$STATE_DIR/ping.csv"
-		fi
 		;;
-	history) [ -f "$TRAFFIC_LOG" ] && cat "$TRAFFIC_LOG" || true ;;
+	history) [ -f "$TRAFFIC_LOG" ] && tail -n 180 "$TRAFFIC_LOG" || true ;;
 	update) echo "downloading lists via tunnel…"; /etc/mierukop/update-lists.sh download; echo "done. $(/usr/bin/mierukop count) subnets in set" ;;
 	lists)  echo "available:"; /etc/mierukop/update-lists.sh available | tr " " "\n" | sed "/^$/d;s/^/  /" ;;
 	list)
@@ -424,7 +468,9 @@ case "$1" in
 		uci commit $CONF
 		echo "saved to server '$sv'; run: mierukop restart"
 		;;
-	count) nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' | wc -l ;;
+	count)
+		c=$(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' | wc -l)
+		echo "$c" > "$STATE_DIR/subnets.count"; echo "$c" ;;
 	add-domain)
 		[ -n "$2" ] || { echo "usage: mierukop add-domain <domain>"; exit 1; }
 		uci add_list $CONF.user.domain="$2"; uci commit $CONF
