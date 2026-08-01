@@ -130,6 +130,14 @@ TUN="\$1"
 ip addr add ${addr}/24 dev "\$TUN" 2>/dev/null
 ip link set "\$TUN" up
 ip route replace default dev "\$TUN" table $table
+# Safety net: copy the directly-connected LAN routes into the tunnel table.
+# Without them a packet that still carries the mark on its way BACK to a client
+# would follow this table's default route into the tunnel and the client hangs.
+ip -4 route show table main scope link 2>/dev/null | grep -v ' dev mtun' | while read -r net rest; do
+	case "\$net" in 10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*)
+		ip route replace "\$net" \$rest table $table 2>/dev/null ;;
+	esac
+done
 ip rule del fwmark $mark lookup $table 2>/dev/null
 ip rule add fwmark $mark lookup $table
 sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1
@@ -154,11 +162,12 @@ EOF
 
 # ── nftables: one table, a set + marking rule per tunnel ─────────────────────
 setup_nft_all() {
-	local sets="" pre="" out="" fwd="" post="" defrule="" line idx kind g tun mark setname
+	local sets="" pre="" out="" fwd="" post="" defrule="" tunset="" line idx kind g tun mark setname
 	sets="	set mierukop_direct { type ipv4_addr; flags interval; auto-merge; }"
 	for line in $(tunnels); do
 		idx=${line%%|*}; kind=$(echo "$line" | cut -d'|' -f2); g=$(echo "$line" | cut -d'|' -f3)
 		tun=$(t_tun "$idx"); mark=$(t_mark "$idx"); setname=$(t_set "$idx" "$kind" "$g")
+		tunset="$tunset\"$tun\", "
 		sets="$sets
 	set $setname { type ipv4_addr; flags interval; auto-merge; }"
 		# udp/443 reject: QUIC through a TCP-transport mieru is UDP-over-TCP
@@ -182,11 +191,20 @@ setup_nft_all() {
 		ip daddr @$setname meta mark set $mark ct mark set $mark return"
 		fi
 	done
+	tunset=${tunset%, }
+	# Never mark anything heading back to the LAN. The fwmark ip rules point at
+	# tables whose only route is "default dev mtunN", so a marked reply packet
+	# destined for a LAN client would be pushed back into the tunnel instead of
+	# being delivered — forwarded clients would hang while the router itself
+	# stayed fine (its replies hit the `local` table first).
+	local LOCALNETS="10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16, 198.18.0.0/15, 224.0.0.0/4"
 	nft -f - <<EOF
 table $NFT_TABLE {
 $sets
 	chain prerouting {
 		type filter hook prerouting priority mangle; policy accept;
+		iifname { $tunset } return
+		ip daddr { $LOCALNETS } return
 		ct mark != 0 meta mark set ct mark return
 		ip daddr @mierukop_direct return
 $pre
@@ -194,6 +212,7 @@ $defrule
 	}
 	chain output {
 		type route hook output priority mangle; policy accept;
+		ip daddr { $LOCALNETS } return
 		ct mark != 0 meta mark set ct mark return
 		ip daddr @mierukop_direct return
 $out
