@@ -168,8 +168,12 @@ setup_nft_all() {
 		idx=${line%%|*}; kind=$(echo "$line" | cut -d'|' -f2); g=$(echo "$line" | cut -d'|' -f3)
 		tun=$(t_tun "$idx"); mark=$(t_mark "$idx"); setname=$(t_set "$idx" "$kind" "$g")
 		tunset="$tunset\"$tun\", "
+		# the v6 twin exists only so dnsmasq has somewhere to put AAAA answers:
+		# without it every AAAA for a routed domain logs "nftset ... Could not
+		# resolve hostname". Nothing routes off it (no ip6 fwmark rules).
 		sets="$sets
-	set $setname { type ipv4_addr; flags interval; auto-merge; }"
+	set $setname { type ipv4_addr; flags interval; auto-merge; }
+	set ${setname}6 { type ipv6_addr; flags interval; auto-merge; }"
 		# udp/443 reject: QUIC through a TCP-transport mieru is UDP-over-TCP
 		# (double congestion control) — reject makes clients fall back to H2/TCP
 		fwd="$fwd
@@ -205,6 +209,7 @@ $sets
 		type filter hook prerouting priority mangle; policy accept;
 		iifname { $tunset } return
 		ip daddr { $LOCALNETS } return
+		meta l4proto { icmp, ipv6-icmp } return
 		ct mark != 0 meta mark set ct mark return
 		ip daddr @mierukop_direct return
 $pre
@@ -213,6 +218,7 @@ $defrule
 	chain output {
 		type route hook output priority mangle; policy accept;
 		ip daddr { $LOCALNETS } return
+		meta l4proto { icmp, ipv6-icmp } return
 		ct mark != 0 meta mark set ct mark return
 		ip daddr @mierukop_direct return
 $out

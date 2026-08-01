@@ -159,15 +159,17 @@ emit_add_batch() {  # setname
 
 # append one tunnel's domain rules (resolve via tunneled DNS, add IPs to its set)
 emit_tunnel_domains() {  # setname names kind g  (stdout)
-	local setname="$1" names="$2" kind="$3" g="$4" name f d
+	local setname="$1" names="$2" kind="$3" g="$4" name f d ns
+	# both families: AAAA lands in the v6 twin instead of erroring out of the
+	# ipv4 set on every AAAA query for a routed domain
+	ns="inet#mierukop#$setname,inet#mierukop#${setname}6"
 	for name in $names; do
 		f="$CACHE/$name.domain.lst"; [ -f "$f" ] || continue
-		while read -r d; do case "$d" in ""|"#"*|"."*) continue ;; esac
-			echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/inet#mierukop#$setname"
-		done < "$f"
+		awk -v dns="$ROUTED_DNS" -v ns="$ns" \
+			'/^[^#.[:space:]]/ { print "server=/" $1 "/" dns; print "nftset=/" $1 "/" ns }' "$f"
 	done
 	for d in $(t_domains "$kind" "$g"); do
-		echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/inet#mierukop#$setname"
+		echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/$ns"
 	done
 }
 
