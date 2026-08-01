@@ -135,10 +135,13 @@ collect_tunnel_subnets() {  # names kind g
 			filter_excluded < "$f" | filter_megablocks
 		done
 	fi
-	# static Google nets route ALL of Google (Search/Maps/Play) into the tunnel —
-	# off unless explicitly enabled; youtube domains still route via dnsmasq nftset
+	# Static Google nets keep the WHOLE Google fleet on one egress. Needed: the
+	# watch page and the googlevideo stream must exit through the same IP or
+	# YouTube 403s the stream — and googlevideo hostnames are per-session, so
+	# domain routing alone leaves gaps. Costs Search/Maps a tunnel trip; set
+	# settings.youtube_static_subnets=0 to route strictly by domain instead.
 	case " $names " in *" youtube "*|*" google_ai "*|*" google_play "*)
-		if [ "$(uci -q get $CONF.settings.youtube_static_subnets)" = "1" ]; then
+		if [ "$(uci -q get $CONF.settings.youtube_static_subnets)" != "0" ]; then
 			for net in $GOOGLE_SUBNETS; do echo "$net"; done
 		fi ;;
 	esac
