@@ -99,9 +99,12 @@ _servers_json() {  # args: server sections
 write_mieru_conf_f() {  # file profile rpc socks user pass servers_json
 	local f="$1" prof="$2" rpc="$3" socks="$4" user="$5" pass="$6" sj="$7" mux lvl
 	mux=$(uci_get multiplexing); [ -n "$mux" ] || mux=MULTIPLEXING_MIDDLE
-	# WARNING by default: on INFO all three mieru daemons log every connection
-	# into syslog (constant logd churn); set settings.mieru_loglevel=INFO to debug
-	lvl=$(uci_get mieru_loglevel); [ -n "$lvl" ] || lvl=WARNING
+	# WARN by default: on INFO all three mieru daemons log every connection into
+	# syslog (constant logd churn); set settings.mieru_loglevel=INFO to debug.
+	# Valid enum values are TRACE/DEBUG/INFO/WARN/ERROR/FATAL — anything else makes
+	# `mieru apply config` fail and the instance never starts.
+	lvl=$(uci_get mieru_loglevel)
+	case "$lvl" in TRACE|DEBUG|INFO|WARN|ERROR|FATAL) ;; *) lvl=WARN ;; esac
 	mkdir -p "$RUN_DIR"
 	cat > "$f" <<EOF
 {
