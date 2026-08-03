@@ -20,11 +20,22 @@ document.addEventListener('visibilitychange', function(){
  *   'require mierukop.lib as lib';  return lib.page({ load, render });
  */
 
-var RX_COL = '#16a34a', TX_COL = '#2563eb';
+var RX_COL = 'var(--mk-rx)', TX_COL = 'var(--mk-tx)';
 
 var CSS = `
-.mk-chart{display:block;width:100%;height:130px;border:1px solid rgba(127,127,127,.3);border-radius:3px;
-          background:rgba(127,127,127,.05)}
+/* Palette lives in variables so the dark themes (Argon/Material) get colours
+   that actually pass contrast — the old hard-coded hexes sat at ~3:1 on black. */
+:root{
+  --mk-ok:#16a34a; --mk-warn:#b45309; --mk-bad:#dc2626;
+  --mk-rx:#16a34a; --mk-tx:#2563eb;
+  --mk-line:rgba(127,127,127,.28); --mk-soft:rgba(127,127,127,.07);
+}
+@media (prefers-color-scheme: dark){
+  :root{ --mk-ok:#4ade80; --mk-warn:#fbbf24; --mk-bad:#f87171;
+         --mk-rx:#4ade80; --mk-tx:#60a5fa; }
+}
+.mk-chart{display:block;width:100%;height:130px;border:1px solid var(--mk-line);border-radius:3px;
+          background:var(--mk-soft)}
 .mk-act{margin:10px 0 0;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .mk-leg{display:flex;gap:22px;flex-wrap:wrap;margin-top:8px;font-size:12px}
 .mk-leg span{display:inline-flex;align-items:center;gap:7px}
@@ -32,23 +43,60 @@ var CSS = `
 .mk-leg b{font-weight:600}
 .mk-out{white-space:pre-wrap;font-family:monospace;font-size:12px;background:rgba(127,127,127,.1);
         padding:10px 12px;border-radius:4px;margin-top:10px;max-height:200px;overflow:auto;display:none}
-.mk-up{color:#16a34a;font-weight:bold}.mk-down{color:#dc2626;font-weight:bold}.mk-warn{color:#d97706;font-weight:bold}
+.mk-up{color:var(--mk-ok);font-weight:bold}
+.mk-down{color:var(--mk-bad);font-weight:bold}
+.mk-warn{color:var(--mk-warn);font-weight:bold}
 .mk-st td{padding:5px 8px}
 .mk-badge{font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;line-height:1;white-space:nowrap;
           border:1px solid transparent}
-.mk-badge.ok{color:#16a34a;background:rgba(22,163,74,.12);border-color:rgba(22,163,74,.35)}
-.mk-badge.warn{color:#b45309;background:rgba(217,119,6,.12);border-color:rgba(217,119,6,.35)}
-.mk-badge.bad{color:#dc2626;background:rgba(220,38,38,.12);border-color:rgba(220,38,38,.35)}
+.mk-badge.ok{color:var(--mk-ok);background:rgba(22,163,74,.12);border-color:rgba(22,163,74,.35)}
+.mk-badge.warn{color:var(--mk-warn);background:rgba(217,119,6,.12);border-color:rgba(217,119,6,.35)}
+.mk-badge.bad{color:var(--mk-bad);background:rgba(220,38,38,.12);border-color:rgba(220,38,38,.35)}
 .mk-cards{display:flex;gap:10px;flex-wrap:wrap}
-.mk-card{flex:1 1 210px;min-width:210px;border:1px solid rgba(127,127,127,.25);border-radius:8px;
-         padding:10px 12px;background:rgba(127,127,127,.04)}
+.mk-card{flex:1 1 210px;min-width:210px;border:1px solid var(--mk-line);border-radius:8px;
+         padding:10px 12px;background:var(--mk-soft)}
 .mk-card-h{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}
 .mk-card-h b{font-size:13px;font-weight:700}
 .mk-card-r{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;gap:10px}
 .mk-card-r>span{opacity:.6;white-space:nowrap}
 .mk-card-r>b{font-weight:600;text-align:right;word-break:break-all}
 .mk-hint{font-size:12px;opacity:.75;margin-bottom:8px}
+/* health checks — one row per check, worst one drives the header badge */
+.mk-checks{display:flex;flex-direction:column;gap:4px;margin-top:2px}
+.mk-chk{display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:6px;
+        background:var(--mk-soft);border:1px solid var(--mk-line);font-size:13px}
+.mk-chk i{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.mk-chk.ok i{background:var(--mk-ok)}
+.mk-chk.warn i{background:var(--mk-warn)}
+.mk-chk.bad i{background:var(--mk-bad)}
+.mk-chk.na i{background:rgba(127,127,127,.5)}
+.mk-chk>span{flex:1 1 auto}
+.mk-chk button{margin-left:auto;flex:0 0 auto}
+.mk-ev{font-size:12px}
+.mk-ev td{padding:4px 8px;vertical-align:top}
+.mk-ev .t{white-space:nowrap;opacity:.6}
+.mk-ev .s-bad{color:var(--mk-bad);font-weight:600}
+.mk-ev .s-warn{color:var(--mk-warn);font-weight:600}
+.mk-qa{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.mk-qa input{flex:1 1 260px;min-width:0}
+/* Phones: cards go full width, buttons become tappable, tables turn into
+   stacked rows using each cell's data-label. */
+@media (max-width:700px){
+  .mk-card{min-width:100%;flex-basis:100%}
+  .mk-act{gap:8px}
+  .mk-act button,.mk-act input{flex:1 1 100%;min-height:44px}
+  .mk-qa input{flex:1 1 100%}
+  .mk-chk{align-items:flex-start;flex-wrap:wrap}
+  .mk-chk button{margin-left:19px;min-height:38px}
+  table.mk-resp thead{display:none}
+  table.mk-resp tr{display:block;border-bottom:1px solid var(--mk-line);padding:6px 0}
+  table.mk-resp tr:last-child{border-bottom:0}
+  table.mk-resp td{display:flex;justify-content:space-between;gap:14px;padding:3px 8px;border:0}
+  table.mk-resp td::before{content:attr(data-label);opacity:.6;flex:0 0 auto}
+  .mk-chart{height:100px}
+}
 `;
+
 
 function fmtRate(bps){
   bps = bps || 0;
@@ -95,7 +143,8 @@ var Base = baseclass.extend({
   },
 
   colorPings: function(){
-    var col=function(ms){ var n=parseInt(ms); return isNaN(n)?'#dc2626':(n<=60?'#16a34a':(n<=120?'#d97706':'#dc2626')); };
+    var col=function(ms){ var n=parseInt(ms);
+      return isNaN(n)?'var(--mk-bad)':(n<=60?'var(--mk-ok)':(n<=120?'var(--mk-warn)':'var(--mk-bad)')); };
     document.querySelectorAll('table').forEach(function(tbl){
       var hdr=tbl.querySelector('tr'); if(!hdr) return; var idx=-1;
       Array.prototype.forEach.call(hdr.children,function(th,i){ if((th.textContent||'').trim()==='Пинг, мс') idx=i; });
@@ -184,7 +233,7 @@ var Base = baseclass.extend({
       if(min===1e9)min=0; var rng=(max-min)||1, n=b.length, step=n>1?W/(n-1):W;
       var Y=function(v){ return (H-pad-((v-min)/rng)*(H-pad*2)).toFixed(1); };
       var d=''; b.forEach(function(v,i){ d+=(i?'L':'M')+(i*step).toFixed(1)+' '+Y(v)+' '; });
-      var last=b[n-1], col=(last<=60?RX_COL:(last<=120?'#d97706':'#dc2626'));
+      var last=b[n-1], col=(last<=60?'var(--mk-ok)':(last<=120?'var(--mk-warn)':'var(--mk-bad)'));
       self._pingsvg.innerHTML=
         '<svg class="mk-chart" style="height:70px" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
         +'<path d="'+d+'L'+((n-1)*step).toFixed(1)+' '+H+' L0 '+H+' Z" fill="'+col+'" fill-opacity=".15"/>'
@@ -223,19 +272,19 @@ var Base = baseclass.extend({
         E('th',{'class':'th'},_('Трафик'))])];
       (t||'').trim().split('\n').forEach(function(l){
         if(!l) return; var f=l.split('|'); if(f.length<5) return;
-        var routed=parseInt(f[3])||0, rc=E('td',{'class':'td'});
+        var routed=parseInt(f[3])||0, rc=E('td',{'class':'td','data-label':_('Через туннель')});
         rc.innerHTML = routed>0 ? '<b class="mk-up">● '+routed+'</b>' : '<span style="opacity:.5">—</span>';
         rows.push(E('tr',{'class':'tr'},[
-          E('td',{'class':'td'}, f[1]==='?'?'—':f[1]),
-          E('td',{'class':'td'}, f[0]),
-          E('td',{'class':'td'}, f[2]),
+          E('td',{'class':'td','data-label':_('Устройство')}, f[1]==='?'?'—':f[1]),
+          E('td',{'class':'td','data-label':'IP'}, f[0]),
+          E('td',{'class':'td','data-label':_('Соединений')}, f[2]),
           rc,
-          E('td',{'class':'td'}, self.fmtBytes(f[4]))
+          E('td',{'class':'td','data-label':_('Трафик')}, self.fmtBytes(f[4]))
         ]));
       });
       if(rows.length===1) rows.push(E('tr',{'class':'tr'},[
         E('td',{'class':'td',colspan:'5',style:'opacity:.6'},_('нет активных клиентов'))]));
-      self._clients.innerHTML=''; self._clients.appendChild(E('table',{'class':'table'},rows));
+      self._clients.innerHTML=''; self._clients.appendChild(E('table',{'class':'table mk-resp'},rows));
     });
   },
 
@@ -252,12 +301,65 @@ var Base = baseclass.extend({
       (t||'').trim().split('\n').forEach(function(l){
         if(!l) return; var f=l.split('|'); if(f.length<6) return;
         var tr=E('tr',{'class':'tr'},[
-          E('td',{'class':'td'},f[0]), E('td',{'class':'td'},f[1]), E('td',{'class':'td'},f[2])]);
-        ['3','4','5'].forEach(function(i){ var td=E('td',{'class':'td'}); td.innerHTML=code(f[i]); tr.appendChild(td); });
+          E('td',{'class':'td','data-label':_('Туннель')},f[0]),
+          E('td',{'class':'td','data-label':_('Внешний IP')},f[1]),
+          E('td',{'class':'td','data-label':_('Страна')},f[2])]);
+        ['YouTube','Telegram','Discord'].forEach(function(lbl,k){
+          var td=E('td',{'class':'td','data-label':lbl}); td.innerHTML=code(f[k+3]); tr.appendChild(td); });
         rows.push(tr);
       });
-      self._scout.innerHTML=''; self._scout.appendChild(E('table',{'class':'table'},rows));
+      self._scout.innerHTML=''; self._scout.appendChild(E('table',{'class':'table mk-resp'},rows));
       return null;
+    });
+  },
+
+  // One row per check from `mierukop health`; the worst one drives the header
+  // badge. Deliberately per-tunnel — a single global "connected" hid a dead
+  // group tunnel for a whole day.
+  loadHealth: function(){
+    var self=this; if(!self._checks) return Promise.resolve();
+    return self.exec(['health']).then(function(t){
+      var rows=(t||'').trim().split('\n').filter(function(l){ return l.indexOf('check|')===0; });
+      var rank={ok:0,na:1,warn:2,bad:3}, worst='ok';
+      self._checks.innerHTML='';
+      rows.forEach(function(l){
+        var f=l.split('|'), sev=f[2]||'na', txt=f[3]||'', fix=f[4]||'';
+        if((rank[sev]||0)>(rank[worst]||0)) worst=sev;
+        var row=E('div',{'class':'mk-chk '+sev},[ E('i',{}), E('span',{},txt) ]);
+        if(fix) row.appendChild(E('button',{'class':'cbi-button cbi-button-apply',
+          click: ui.createHandlerFn(self,function(){
+            return self.exec(fix.split(' ')).then(function(){ return self.loadHealth(); });
+          })}, _('Исправить')));
+        self._checks.appendChild(row);
+      });
+      if(!rows.length) self._checks.appendChild(E('div',{'class':'mk-hint'},_('нет данных')));
+      if(self._badge){
+        var m={ok:['ok',_('● всё работает')],warn:['warn',_('● есть замечания')],
+               bad:['bad',_('● есть проблемы')],na:['',_('● mesh-нода')]}[worst];
+        self._badge.className='mk-badge '+m[0]; self._badge.textContent=m[1];
+      }
+      return worst;
+    });
+  },
+
+  loadEvents: function(){
+    var self=this; if(!self._events) return Promise.resolve();
+    return self.exec(['events','60']).then(function(t){
+      var lines=(t||'').trim().split('\n').filter(function(l){ return l.indexOf('|')>0; }).reverse();
+      var rows=[E('tr',{'class':'tr table-titles'},[
+        E('th',{'class':'th'},_('Время')), E('th',{'class':'th'},_('Источник')), E('th',{'class':'th'},_('Событие'))])];
+      lines.forEach(function(l){
+        var f=l.split('|'), sev=f[1]||'info';
+        rows.push(E('tr',{'class':'tr'},[
+          E('td',{'class':'td t','data-label':_('Время')}, f[0]||''),
+          E('td',{'class':'td','data-label':_('Источник')}, f[2]||''),
+          E('td',{'class':'td '+(sev==='bad'?'s-bad':(sev==='warn'?'s-warn':'')),'data-label':_('Событие')}, f[3]||'')
+        ]));
+      });
+      if(rows.length===1) rows.push(E('tr',{'class':'tr'},[
+        E('td',{'class':'td',colspan:'3',style:'opacity:.6'},_('событий пока нет'))]));
+      self._events.innerHTML='';
+      self._events.appendChild(E('table',{'class':'table mk-ev mk-resp'},rows));
     });
   },
 
@@ -277,7 +379,8 @@ var Base = baseclass.extend({
         self._v.server.textContent=s.server||'—';
         self._v.subnets.textContent=s.subnets||'—';
       }
-      if(self._badge){
+      // pages showing the check list let loadHealth own the badge
+      if(self._badge && !self._checks){
         self._badge.className='mk-badge '+(connected?'ok':(svc?'warn':'bad'));
         self._badge.textContent=connected?_('● подключён'):(svc?_('● деградация'):_('● остановлен'));
       }

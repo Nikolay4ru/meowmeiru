@@ -44,7 +44,10 @@ return lib.page({
         E('div',{'class':'mk-hint'},_('Пинг (мс) показан в колонке «Пинг» выше и в выпадающем списке активного сервера.')),
         E('div',{'class':'mk-act'},[
           self.mkBtn('pingall','cbi-button-action',_('Обновить пинг серверов'), function(){
-            return self.exec(['pingall']).then(function(){ setTimeout(function(){ location.reload(); }, 700); return null; });
+            // repaint in place: location.reload() cost seconds of white screen on A53
+            return self.exec(['pingall']).then(function(){
+              return self.loadBase().then(function(){ self.colorPings(); return null; });
+            });
           }),
           self.mkBtn('bestsrv','cbi-button-positive',_('Выбрать лучший сейчас'), function(){
             return self.exec(['best-server']).then(function(t){ setTimeout(function(){ location.reload(); }, 1500); return t; });

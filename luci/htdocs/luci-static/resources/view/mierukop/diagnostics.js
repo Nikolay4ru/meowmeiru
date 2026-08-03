@@ -29,11 +29,33 @@ return lib.page({
       ])
     ]);
 
-    var page=E('div',{},[ E('style',{},self.CSS), self.brandBar(_('диагностика')), selfcheckSection, clientsSection ]);
+    // event journal — logread is the only history the router keeps, and it is
+    // wiped on reboot, so "it dropped for ten minutes this morning" was unprovable
+    self._events=E('div',{style:'margin-top:6px;max-height:340px;overflow:auto'});
+    var repOut=E('div',{'class':'mk-out'});
+    var eventsSection=E('div',{'class':'cbi-section'},[
+      E('h3',{},_('Журнал событий')),
+      E('div',{'class':'mk-hint'},_('Последние события модуля: перезапуски, срабатывания сторожа, обновления списков, ошибки.')),
+      self._events,
+      E('div',{'class':'mk-act'},[
+        self.mkBtn('evref','cbi-button-action',_('Обновить'), function(){ return self.loadEvents(); }),
+        self.mkBtn('report','cbi-button-neutral',_('Отчёт для поддержки'), function(){
+          return self.exec(['report']).then(function(t){
+            try{ navigator.clipboard.writeText(t||''); }catch(e){}
+            return (t||'')+'\n\n'+_('(скопировано в буфер обмена)');
+          });
+        }, repOut)
+      ]),
+      repOut
+    ]);
 
-    self.loadClients(); self.refreshStatus();
+    var page=E('div',{},[ E('style',{},self.CSS), self.brandBar(_('диагностика')),
+                          selfcheckSection, clientsSection, eventsSection ]);
+
+    self.loadClients(); self.refreshStatus(); self.loadEvents();
     // clients does a full nf_conntrack pass — 30s is plenty for a dashboard
     poll.add(function(){ self.refreshStatus(); return self.loadClients(); }, 30);
+    poll.add(function(){ return self.loadEvents(); }, 60);
     return page;
   },
 

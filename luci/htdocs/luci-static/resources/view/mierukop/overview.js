@@ -14,11 +14,14 @@ return lib.page({
               server:E('span',{},'—'), subnets:E('span',{},'—') };
     var out=E('div',{'class':'mk-out'});
 
+    // Per-check list instead of four aggregate rows: a live default tunnel used
+    // to read as "подключён" while the group tunnels were dead.
+    self._checks=E('div',{'class':'mk-checks'});
+
     var statusSection=E('div',{'class':'cbi-section'},[
       E('h3',{},_('Состояние')),
-      E('table',{'class':'table mk-st'},[
-        self.row(_('Служба'), self._v.service),
-        self.row(_('Туннель'), self._v.tunnel),
+      self._checks,
+      E('table',{'class':'table mk-st',style:'margin-top:10px'},[
         self.row(_('Активный сервер'), self._v.server),
         self.row(_('Маршрутизируется подсетей'), self._v.subnets)
       ]),
@@ -36,6 +39,31 @@ return lib.page({
         self.mkBtn('update','cbi-button-action',_('Обновить списки'), function(){ return self.exec(['update']); }, out)
       ]),
       out
+    ]);
+
+    // quick routing changes — applied without restarting the tunnels
+    var qaIn=E('input',{type:'text','class':'cbi-input-text',
+      placeholder:_('например youtube.com или ссылка целиком')});
+    var qaOut=E('div',{'class':'mk-out'});
+    var qa=function(cmd){
+      var v=(qaIn.value||'').trim();
+      if(!v) return Promise.resolve(_('Укажите сайт.'));
+      return self.exec([cmd,v]).then(function(t){
+        qaIn.value='';
+        return Promise.all([self.loadHealth(), self.refreshStatus()]).then(function(){ return t; });
+      });
+    };
+    var quickSection=E('div',{'class':'cbi-section'},[
+      E('h3',{},_('Сайт не работает?')),
+      E('div',{'class':'mk-hint'},
+        _('Отправьте его через туннель или, наоборот, мимо него. Применяется сразу, без перезапуска — соединения других устройств не рвутся.')),
+      E('div',{'class':'mk-qa'},[
+        qaIn,
+        self.mkBtn('qain','cbi-button-positive',_('Через туннель'), function(){ return qa('route-add'); }, qaOut),
+        self.mkBtn('qaout','cbi-button-neutral',_('Напрямую'),     function(){ return qa('route-direct'); }, qaOut),
+        self.mkBtn('qadel','cbi-button-remove',_('Убрать правило'), function(){ return qa('route-del'); }, qaOut)
+      ]),
+      qaOut
     ]);
 
     // per-tunnel status cards
@@ -94,6 +122,7 @@ return lib.page({
       E('style',{},self.CSS),
       self.brandBar(),
       statusSection,
+      quickSection,
       tunnelsSection,
       chartSection,
       qualSection
@@ -112,7 +141,7 @@ return lib.page({
       self.drawChart();
     });
 
-    self.refreshStatus(); self.loadTunnels(); self.drawPingChart();
+    self.refreshStatus(); self.loadHealth(); self.loadTunnels(); self.drawPingChart();
     // one combined 5s poll (ui-status carries the traffic rates too); the ping
     // history only gains a point per pingall run — redrawing it every 3s was
     // ~100 wasted forks/min
@@ -122,6 +151,8 @@ return lib.page({
       });
     }, 5);
     poll.add(function(){ return self.drawPingChart(); }, 60);
+    // health probes each tunnel over its SOCKS port — too heavy for the 5s tick
+    poll.add(function(){ return self.loadHealth(); }, 30);
 
     return page;
   },
