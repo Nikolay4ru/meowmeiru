@@ -27,6 +27,21 @@ srv_get() { uci -q get "$CONF.$1.$2"; }
 group_list() { uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=group$/\1/p"; }
 grp_get() { uci -q get "$CONF.$1.$2"; }
 
+# ── tunnel enumeration (mirrors init.d) ──
+tunnels() {
+	echo "0|default|"
+	local i=0 g
+	for g in $(group_list); do
+		[ "$(grp_get "$g" enabled)" = "0" ] && continue
+		i=$((i+1)); echo "$i|group|$g"
+	done
+}
+t_tun()   { echo "mtun$1"; }
+t_socks() { echo $(( SOCKS_PORT + $1 )); }
+t_mark()  { printf '0x%x' $(( 0x1042 + $1 )); }
+t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "mierukop_$3"; }
+dnsmasq_dropin() { ls /tmp/dnsmasq.d/mierukop-domains.conf /tmp/dnsmasq.*.d/mierukop-domains.conf 2>/dev/null | head -1; }
+
 usage() {
 	cat <<EOF
 mierukop — policy routing over mieru (podkop-style)
@@ -34,6 +49,12 @@ mierukop — policy routing over mieru (podkop-style)
 Usage: mierukop <command>
   start | stop | restart     manage the service
   bypass on|off|status       master switch: off = everything goes direct
+  health                     per-check status (drives the UI traffic light)
+  events [n]                 recent module events, newest last
+  report                     full support bundle (secrets masked)
+  route-add <домен> [группа] route a domain through the tunnel, no restart
+  route-direct <домен>       force a domain to bypass the tunnel, no restart
+  route-del <домен>          drop a domain rule, no restart
   version                    show module version
   update-check               check github for a newer version
   self-update                download + install the latest version (via tunnel)
@@ -92,6 +113,172 @@ case "$1" in
 				echo "dnsmasq_dropin: $(ls /tmp/dnsmasq.d/mierukop*.conf /tmp/dnsmasq.*.d/mierukop*.conf 2>/dev/null | wc -l)" ;;
 			*) echo "usage: mierukop bypass [on|off|status]"; exit 1 ;;
 		esac ;;
+	health)
+		# One line per check, consumed by the LuCI traffic light:
+		#   check|<id>|<ok|warn|bad|na>|<текст>|<команда-починки>
+		# Deliberately per-tunnel: a single global pgrep reports "connected" while
+		# group tunnels are dead (that was the 1.3.8 outage).
+		emit() { echo "check|$1|$2|$3|${4:-}"; }
+		if [ "$(cat /etc/meownet-role 2>/dev/null)" = "node" ]; then
+			emit role na "Mesh-нода — обход обеспечивает главный роутер"; exit 0
+		fi
+		if [ "$(uci -q get $CONF.settings.enabled)" != "1" ]; then
+			emit enabled warn "Обход выключен — весь трафик идёт напрямую" "bypass on"; exit 0
+		fi
+		emit enabled ok "Обход включён"
+		# sets are legitimately empty for a few seconds after a restart
+		up=99999; [ -r "$STATE_DIR/started" ] && { read st < "$STATE_DIR/started"; up=$(( $(date +%s) - st )); }
+		grace=0; [ "$up" -lt 45 ] && grace=1
+		if nft list table $NFT_TABLE >/dev/null 2>&1; then
+			emit nft ok "Правила маршрутизации загружены"
+		else
+			emit nft bad "Нет таблицы nftables — маршрутизация не работает" "restart"
+		fi
+		if dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx nftset; then
+			dc=$(dnsmasq_dropin)
+			if [ -s "$dc" ]; then
+				emit dns ok "Доменная маршрутизация: $(grep -c '^nftset=' "$dc") правил"
+			else
+				emit dns bad "Нет правил доменной маршрутизации" "update"
+			fi
+		else
+			emit dns bad "dnsmasq без поддержки nftset — доменные списки не работают" ""
+		fi
+		for line in $(tunnels); do
+			idx=${line%%|*}; rest=${line#*|}; kind=${rest%%|*}; g=${rest#*|}
+			if [ "$kind" = default ]; then nm="Основной"; else nm=$(grp_get "$g" label); [ -n "$nm" ] || nm="$g"; fi
+			tun=$(t_tun "$idx"); sp=$(t_socks "$idx"); mk=$(t_mark "$idx"); stn=$(t_set "$idx" "$kind" "$g")
+			prob=""
+			[ -d "/sys/class/net/$tun" ] || prob="нет интерфейса $tun"
+			[ -z "$prob" ] && ! netstat -tln 2>/dev/null | grep -q "127.0.0.1:$sp " && prob="mieru не слушает порт $sp"
+			[ -z "$prob" ] && ! ip rule show 2>/dev/null | grep -q "fwmark $mk" && prob="нет правила маршрутизации"
+			[ -n "$prob" ] && { emit "tun$idx" bad "$nm: $prob" "restart"; continue; }
+			code=$(curl -fs --socks5-hostname "127.0.0.1:$sp" --max-time 6 -o /dev/null -w '%{http_code}' http://www.gstatic.com/generate_204 2>/dev/null)
+			cnt=$(nft list set $NFT_TABLE "$stn" 2>/dev/null | tr ',' '\n' | grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+			case "$code" in
+				204|200|301|302)
+					if [ "${cnt:-0}" -lt 1 ] && [ "$grace" = 0 ]; then
+						emit "tun$idx" warn "$nm: туннель жив, но список адресов пуст" "update"
+					else
+						emit "tun$idx" ok "$nm: работает, адресов в наборе $cnt"
+					fi ;;
+				*) emit "tun$idx" bad "$nm: туннель не пропускает трафик" "restart" ;;
+			esac
+		done
+		old=0; oldest=""; now=$(date +%s)
+		for f in /etc/mierukop/lists/*.lst; do
+			[ -f "$f" ] || continue
+			m=$(date -r "$f" +%s 2>/dev/null) || m=$now
+			a=$(( (now - m) / 86400 ))
+			[ "$a" -gt "$old" ] && { old=$a; oldest=$(basename "$f"); }
+		done
+		if [ "$old" -gt 14 ]; then emit lists warn "Списки не обновлялись $old дн. ($oldest)" "update"
+		else emit lists ok "Списки свежие, макс. возраст $old дн."; fi
+		if [ -s /tmp/mierukop.wdfail ]; then
+			read n < /tmp/mierukop.wdfail
+			emit wd warn "Сторож фиксирует сбои: $n подряд"
+		fi
+		;;
+	events)
+		# logread is the only journal we have; map it to ts|sev|tag|text for the UI
+		# match the syslog TAG only — crond lines merely *mention* the word in the
+		# command they run, and would drown the journal in "sample" every minute
+		logread 2>/dev/null \
+		  | grep -E 'mierukop(-wd|-lists)?(\[[0-9]+\])?: |dnsmasq\[[0-9]+\]: nftset' \
+		  | tail -n "${2:-80}" | awk '{
+			ts=$2" "$3" "$4; line=$0
+			sev="info"
+			if (line ~ /failed|error|Error|не запуст|abort|invalid/) sev="bad"
+			else if (line ~ /strike|probe failed|megablock|stale|missing|reapply|failover/) sev="warn"
+			tag="модуль"
+			if (line ~ /mierukop-wd/) tag="сторож"
+			else if (line ~ /mierukop-lists/) tag="списки"
+			else if (line ~ /dnsmasq/) tag="dns"
+			sub(/.*mierukop[a-z-]*(\[[0-9]*\])?: /, "", line)
+			sub(/.*dnsmasq\[[0-9]*\]: /, "", line)
+			print ts"|"sev"|"tag"|"line }'
+		;;
+	report)
+		# everything a support request needs, with credentials stripped
+		echo "=== meowMieru $VERSION ==="
+		echo "время:    $(date)"
+		echo "модель:   $(cat /tmp/sysinfo/model 2>/dev/null)"
+		echo "прошивка: $(grep -o 'OpenWrt [0-9.]*' /etc/openwrt_release 2>/dev/null | head -1)"
+		echo "аптайм:   $(uptime)"
+		free 2>/dev/null | head -2
+		echo; echo "=== состояние ==="; /usr/bin/mierukop health
+		echo; echo "=== туннели ==="; /usr/bin/mierukop tunnels
+		echo; echo "=== конфигурация (секреты скрыты) ==="
+		uci show $CONF 2>/dev/null | sed -E "s/\.(password|username)=.*/.\1='***'/"
+		echo; echo "=== события ==="; /usr/bin/mierukop events 60
+		;;
+	route-add|route-direct|route-del)
+		act="$1"; raw="$2"; grp="$3"
+		[ -n "$raw" ] || { echo "usage: mierukop $act <домен|ссылка> [группа]"; exit 1; }
+		# accept a pasted URL: strip scheme, credentials, port, path
+		d=$(echo "$raw" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#^[^/@]*@##' -e 's#[/?#].*$##' -e 's#:[0-9]*$##' | tr 'A-Z' 'a-z')
+		case "$d" in
+			*[!a-z0-9.-]*|""|.*|*.) echo "нераспознанный домен: $raw"; exit 1 ;;
+			*.*) : ;;
+			*) echo "нужен домен вида example.com, получено: $d"; exit 1 ;;
+		esac
+		setname="$NFT_SET"
+		case "$act" in
+			route-add)
+				if [ -n "$grp" ]; then
+					[ "$(uci -q get $CONF.$grp)" = "group" ] || { echo "нет такой группы: $grp"; exit 1; }
+					key="$CONF.$grp.domain"; setname="mierukop_$grp"
+				else
+					key="$CONF.user.domain"
+				fi
+				uci -q get "$key" | tr ' ' '\n' | grep -qx "$d" && { echo "$d уже маршрутизируется"; exit 0; }
+				# dnsmasq honours the FIRST nftset directive per domain (the 1.3.3 trap)
+				prev=$(grep -m1 "^nftset=/$d/" "$(dnsmasq_dropin)" 2>/dev/null | sed 's/.*#//')
+				[ -n "$prev" ] && [ "$prev" != "$setname" ] && \
+					echo "внимание: $d уже ведёт в набор $prev — сработает та директива, а не новая"
+				uci add_list "$key=$d"; uci commit $CONF ;;
+			route-direct)
+				key="$CONF.user.exclude_domain"; setname=mierukop_direct
+				uci -q get "$key" | tr ' ' '\n' | grep -qx "$d" && { echo "$d уже идёт напрямую"; exit 0; }
+				uci add_list "$key=$d"; uci commit $CONF ;;
+			route-del)
+				found=0
+				for k in user.domain user.exclude_domain $(group_list | sed 's/$/.domain/'); do
+					uci -q get "$CONF.$k" 2>/dev/null | tr ' ' '\n' | grep -qx "$d" && {
+						uci del_list "$CONF.$k=$d" 2>/dev/null; found=1; }
+				done
+				[ "$found" = 1 ] || { echo "$d не найден в правилах"; exit 1; }
+				uci commit $CONF ;;
+		esac
+		# rebuild sets + drop-in WITHOUT touching the tunnels; dnsmasq restarts only
+		# if the drop-in actually changed
+		/etc/mierukop/update-lists.sh apply >/dev/null 2>&1
+		if [ "$act" != route-del ]; then
+			# Seed the current addresses so the rule bites before the client
+			# re-resolves. The first lookup races the dnsmasq reload we just caused
+			# (and for a freshly routed domain it now goes through the tunnel), so
+			# retry before giving up.
+			seeded=0
+			for try in 1 2 3; do
+				for ip in $(nslookup "$d" 127.0.0.1 2>/dev/null | sed -n '/^Name:/,$p' \
+				            | awk '/^Address/{print $NF}' \
+				            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'); do
+					nft add element $NFT_TABLE "$setname" "{ $ip }" 2>/dev/null && seeded=$((seeded+1))
+					[ "$act" = route-direct ] && command -v conntrack >/dev/null 2>&1 && \
+						conntrack -D -d "$ip" >/dev/null 2>&1
+				done
+				[ "$seeded" -gt 0 ] && break
+				sleep 1
+			done
+			[ "$seeded" -gt 0 ] || echo "адреса пока не определены — правило заработает после первого DNS-запроса клиента"
+		fi
+		case "$act" in
+			route-add)    echo "$d -> через туннель${grp:+ (группа $grp)}" ;;
+			route-direct) echo "$d -> напрямую, мимо туннеля" ;;
+			route-del)    echo "$d -> правило удалено" ;;
+		esac
+		echo "применено без перезапуска туннелей"
+		;;
 	status)
 		sv=$(active_server)
 		echo "version: $VERSION"
@@ -273,11 +460,23 @@ case "$1" in
 			"VERSION:ver"; do
 			repo_dl "${pair%%:*}" "$d/${pair##*:}" && [ -s "$d/${pair##*:}" ] || { echo "  download failed: ${pair%%:*}"; ok=0; }
 		done
-		# sanity: shell scripts must parse, lib must look like our module
-		for f in initd ul wd cli; do sh -n "$d/$f" 2>/dev/null || { echo "  bad script: $f"; ok=0; }; done
-		grep -q "loadTunnels" "$d/lib" 2>/dev/null || ok=0
-		for v in v_overview v_servers v_routing v_diagnostics v_settings; do grep -q "view.extend" "$d/$v" 2>/dev/null || ok=0; done
-		[ "$ok" = 1 ] || { echo "update aborted (download/sanity failed) — current $VERSION kept"; rm -rf "$d"; exit 1; }
+		# Sanity: shell scripts must parse and the LuCI files must look like ours.
+		# Every check says WHAT failed — a silent ok=0 made a broken update
+		# indistinguishable from a network problem for three releases.
+		for f in initd ul wd cli; do
+			sh -n "$d/$f" 2>/dev/null || { echo "  не разбирается как скрипт: $f"; ok=0; }
+		done
+		grep -q "loadTunnels" "$d/lib" 2>/dev/null || { echo "  lib.js не похож на наш (нет loadTunnels)"; ok=0; }
+		# Views call lib.page(); `view.extend` lives in lib.js since 1.3.0 — requiring
+		# it here is what silently blocked every self-update after that refactor.
+		for v in v_overview v_servers v_routing v_diagnostics v_settings; do
+			grep -qE "lib\.page\(|view\.extend" "$d/$v" 2>/dev/null || { echo "  не похож на страницу LuCI: $v"; ok=0; }
+		done
+		case "$(cat "$d/ver" 2>/dev/null | tr -d ' \r\n\t')" in
+			[0-9]*.[0-9]*.[0-9]*) : ;;
+			*) echo "  в VERSION не номер версии"; ok=0 ;;
+		esac
+		[ "$ok" = 1 ] || { echo "обновление отменено (см. причину выше) — осталась версия $VERSION"; rm -rf "$d"; exit 1; }
 		cp "$d/initd" /etc/init.d/mierukop; cp "$d/ul" /etc/mierukop/update-lists.sh
 		cp "$d/wd" /etc/mierukop/watchdog.sh; cp "$d/cli" /usr/bin/mierukop
 		mkdir -p /etc/mierukop/lists; cp "$d/excl" /etc/mierukop/lists/exclude.lst
