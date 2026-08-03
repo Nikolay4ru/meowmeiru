@@ -50,7 +50,7 @@ return lib.page({
       if(!v) return Promise.resolve(_('Укажите сайт.'));
       return self.exec([cmd,v]).then(function(t){
         qaIn.value='';
-        return Promise.all([self.loadHealth(), self.refreshStatus()]).then(function(){ return t; });
+        return Promise.all([self.hlth(), self.refreshStatus()]).then(function(){ return t; });
       });
     };
     var quickSection=E('div',{'class':'cbi-section'},[
@@ -141,7 +141,14 @@ return lib.page({
       self.drawChart();
     });
 
-    self.refreshStatus(); self.loadHealth(); self.loadTunnels(); self.drawPingChart();
+    // see diagnostics.js: a cached lib.js must not blank the page
+    self.hlth=function(){
+      if(typeof self.loadHealth==='function') return self.loadHealth();
+      self._checks.innerHTML='<div class="mk-hint">'+
+        _('Обновите страницу с очисткой кэша (Ctrl+F5 / Cmd+Shift+R) — браузер держит старую версию интерфейса.')+'</div>';
+      return Promise.resolve();
+    };
+    self.refreshStatus(); self.hlth(); self.loadTunnels(); self.drawPingChart();
     // one combined 5s poll (ui-status carries the traffic rates too); the ping
     // history only gains a point per pingall run — redrawing it every 3s was
     // ~100 wasted forks/min
@@ -152,7 +159,7 @@ return lib.page({
     }, 5);
     poll.add(function(){ return self.drawPingChart(); }, 60);
     // health probes each tunnel over its SOCKS port — too heavy for the 5s tick
-    poll.add(function(){ return self.loadHealth(); }, 30);
+    poll.add(function(){ return self.hlth(); }, 30);
 
     return page;
   },

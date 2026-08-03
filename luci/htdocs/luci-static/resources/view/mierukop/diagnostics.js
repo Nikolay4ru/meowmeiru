@@ -38,7 +38,7 @@ return lib.page({
       E('div',{'class':'mk-hint'},_('Последние события модуля: перезапуски, срабатывания сторожа, обновления списков, ошибки.')),
       self._events,
       E('div',{'class':'mk-act'},[
-        self.mkBtn('evref','cbi-button-action',_('Обновить'), function(){ return self.loadEvents(); }),
+        self.mkBtn('evref','cbi-button-action',_('Обновить'), function(){ return self.evts(); }),
         self.mkBtn('report','cbi-button-neutral',_('Отчёт для поддержки'), function(){
           return self.exec(['report']).then(function(t){
             try{ navigator.clipboard.writeText(t||''); }catch(e){}
@@ -52,10 +52,19 @@ return lib.page({
     var page=E('div',{},[ E('style',{},self.CSS), self.brandBar(_('диагностика')),
                           selfcheckSection, clientsSection, eventsSection ]);
 
-    self.loadClients(); self.refreshStatus(); self.loadEvents();
+    // LuCI keys static resources on ITS version, not ours, so right after an
+    // update a browser can still hold the previous lib.js. Never let a missing
+    // helper take the whole page down — degrade to a hint instead.
+    self.evts=function(){
+      if(typeof self.loadEvents==='function') return self.loadEvents();
+      self._events.innerHTML='<div class="mk-hint">'+
+        _('Обновите страницу с очисткой кэша (Ctrl+F5 / Cmd+Shift+R) — браузер держит старую версию интерфейса.')+'</div>';
+      return Promise.resolve();
+    };
+    self.loadClients(); self.refreshStatus(); self.evts();
     // clients does a full nf_conntrack pass — 30s is plenty for a dashboard
     poll.add(function(){ self.refreshStatus(); return self.loadClients(); }, 30);
-    poll.add(function(){ return self.loadEvents(); }, 60);
+    poll.add(function(){ return self.evts(); }, 60);
     return page;
   },
 
