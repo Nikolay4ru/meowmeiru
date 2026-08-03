@@ -268,6 +268,10 @@ case "${1:-apply}" in
 	download)
 		mkdir -p "$CACHE" /tmp/mierukop
 		for name in $(all_names); do download_name "$name"; done
+		# Stamp the run, not the files: since 1.3.2 an unchanged list is left
+		# untouched to spare the flash, so file mtimes stop being a freshness
+		# signal — a current cache looked weeks old to the health check.
+		date +%s > "$CACHE/.last-download" 2>/dev/null
 		config_foreach download_custom list_source
 		apply_all ;;
 	apply)     apply_all ;;

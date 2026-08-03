@@ -351,6 +351,9 @@ start_service() {
 		bring_up_tunnel "$idx" "$kind" "$g"
 	done
 	setup_cron
+	# health checks use this to stay quiet during the first seconds, when the
+	# sets are legitimately still empty
+	mkdir -p /tmp/mierukop && date +%s > /tmp/mierukop/started
 	( sleep 6; /etc/mierukop/update-lists.sh apply; log "started: $(tunnels | wc -l) tunnel(s)" ) &
 }
 

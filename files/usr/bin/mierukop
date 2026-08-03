@@ -165,15 +165,22 @@ case "$1" in
 				*) emit "tun$idx" bad "$nm: туннель не пропускает трафик" "restart" ;;
 			esac
 		done
-		old=0; oldest=""; now=$(date +%s)
-		for f in /etc/mierukop/lists/*.lst; do
-			[ -f "$f" ] || continue
-			m=$(date -r "$f" +%s 2>/dev/null) || m=$now
-			a=$(( (now - m) / 86400 ))
-			[ "$a" -gt "$old" ] && { old=$a; oldest=$(basename "$f"); }
-		done
-		if [ "$old" -gt 14 ]; then emit lists warn "Списки не обновлялись $old дн. ($oldest)" "update"
-		else emit lists ok "Списки свежие, макс. возраст $old дн."; fi
+		# prefer the run stamp; file mtimes lie because unchanged lists are not rewritten
+		now=$(date +%s); old=-1
+		if [ -r /etc/mierukop/lists/.last-download ]; then
+			read stamp < /etc/mierukop/lists/.last-download
+			case "$stamp" in [0-9]*) old=$(( (now - stamp) / 86400 )) ;; esac
+		fi
+		if [ "$old" -lt 0 ]; then
+			old=0
+			for f in /etc/mierukop/lists/*.lst; do
+				[ -f "$f" ] || continue
+				m=$(date -r "$f" +%s 2>/dev/null) || m=$now
+				a=$(( (now - m) / 86400 )); [ "$a" -gt "$old" ] && old=$a
+			done
+		fi
+		if [ "$old" -gt 14 ]; then emit lists warn "Списки не обновлялись $old дн." "update"
+		else emit lists ok "Списки обновлялись $old дн. назад"; fi
 		if [ -s /tmp/mierukop.wdfail ]; then
 			read n < /tmp/mierukop.wdfail
 			emit wd warn "Сторож фиксирует сбои: $n подряд"
