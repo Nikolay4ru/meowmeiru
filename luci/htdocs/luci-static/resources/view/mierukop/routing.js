@@ -8,6 +8,22 @@ var LISTS=['telegram','meta','twitter','discord','roblox','cloudflare','hetzner'
   'youtube','tiktok','google_ai','google_play','hdrezka','russia_inside','russia_outside',
   'anime','news','porn','geoblock','block'];
 
+// Whatever lands in these lists is interpolated verbatim by update-lists.sh into
+// `server=/$d/…` and `nftset=/$d/…`, and dnsmasq is restarted without a --test.
+// This build is no-IDN, so one Cyrillic domain (the field's own placeholder is
+// sberbank.ru!) or one over-long label from a pasted query string makes dnsmasq
+// reject the whole conf-dir and takes DNS *and* DHCP down for the entire LAN.
+// A pasted URL is accepted by dnsmasq but never matches anything, so the site the
+// user just "routed" quietly keeps going direct. `mierukop route-add` already
+// normalises scheme/port/path — the form was the only way in that did not.
+var RX_DOMAIN=/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+function validDomain(sid, v){
+  v=(v==null?'':String(v)).trim();
+  if(!v) return true;
+  return RX_DOMAIN.test(v.toLowerCase()) ? true
+    : _('Только домен вида example.com — латиницей, без схемы, порта, пути и пробелов');
+}
+
 return lib.page({
   load: function(){ return this.loadBase(); },
 
@@ -48,8 +64,10 @@ return lib.page({
     s.tab('routed',_('Через туннель'));
     s.tab('excluded',_('Исключения (напрямую)'));
     o=s.taboption('routed',form.DynamicList,'domain',_('Домен')); o.placeholder='example.com';
+    o.validate=validDomain;
     o=s.taboption('routed',form.DynamicList,'subnet',_('Подсеть (CIDR)')); o.datatype='cidr4'; o.placeholder='203.0.113.0/24';
     o=s.taboption('excluded',form.DynamicList,'exclude_domain',_('Домен (всегда напрямую)')); o.placeholder='sberbank.ru';
+    o.validate=validDomain;
     o=s.taboption('excluded',form.DynamicList,'exclude_subnet',_('Подсеть (всегда напрямую)')); o.datatype='cidr4'; o.placeholder='192.168.0.0/16';
 
     return m.render();

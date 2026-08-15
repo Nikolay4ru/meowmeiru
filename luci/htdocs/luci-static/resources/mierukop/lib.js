@@ -18,9 +18,22 @@ document.addEventListener('visibilitychange', function(){
  * auto-instantiated view) with a static `page()` that builds a view carrying all
  * these helpers. Each page does:
  *   'require mierukop.lib as lib';  return lib.page({ load, render });
+ *
+ * HOUSE RULE: every value that comes out of `mierukop` stdout is handed to E()
+ * INSIDE AN ARRAY — E('b',{},[label]), never E('b',{},label). LuCI's dom.append()
+ * escapes array children through createTextNode, but a BARE string child is
+ * assigned straight to node.innerHTML. Group labels are free text, server labels
+ * are copied verbatim out of the subscription YAML, and the self-check country
+ * comes from ipinfo.io — so the bare form was an HTML-injection sink firing inside
+ * a LuCI session whose rpcd login holds read/write '*'.
  */
 
 var RX_COL = 'var(--mk-rx)', TX_COL = 'var(--mk-tx)';
+
+// The only argv the health list's «Исправить» button is allowed to run. `mierukop`
+// emits the fix command as the LAST field of a '|'-separated record, and a group
+// label containing '|' used to shift a different word into that slot — see loadHealth().
+var FIXES = { 'bypass on':1, 'restart':1, 'update':1 };
 
 var CSS = `
 /* Palette lives in variables so the dark themes (Argon/Material) get colours
@@ -125,8 +138,18 @@ var Base = baseclass.extend({
     });
   },
 
-  exec: function(args){ return fs.exec('/usr/bin/mierukop', args)
-    .then(function(r){ return (r.stdout||'')+(r.stderr||''); }).catch(function(){ return ''; }); },
+  // fs.exec resolves with {code,stdout,stderr} whatever the command returned, and
+  // rejects when rpcd denies the call. Both used to be thrown away: a `sub` that
+  // exited 1 was indistinguishable from a successful import, and a missing ubus
+  // ACL rendered as blank tables with no error anywhere. run() keeps the code for
+  // callers that must branch on it; exec() keeps the plain-text contract everything
+  // else expects but no longer hides a failure.
+  run: function(args){ return fs.exec('/usr/bin/mierukop', args)
+    .then(function(r){ return { code:(r.code|0), out:(r.stdout||'')+(r.stderr||'') }; })
+    .catch(function(e){ return { code:-1, out:'[RPC error: '+((e&&e.message)||e)+']' }; }); },
+
+  exec: function(args){ return this.run(args).then(function(r){
+    return r.code ? (r.out+'\n[exit '+r.code+']') : r.out; }); },
 
   parse: function(t){ var o={}; (t||'').split('\n').forEach(function(l){
     var i=l.indexOf(':'); if(i>0) o[l.slice(0,i).trim()]=l.slice(i+1).trim(); }); return o; },
@@ -252,11 +275,11 @@ var Base = baseclass.extend({
         if(!l) return; var f=l.split('|'); if(f.length<4) return;
         var ok=(f[3]&&f[3]!=='—');
         self._tuns.appendChild(E('div',{'class':'mk-card'},[
-          E('div',{'class':'mk-card-h'},[ E('b',{},f[0]),
+          E('div',{'class':'mk-card-h'},[ E('b',{},[f[0]]),
             E('span',{'class':'mk-badge '+(ok?'ok':'bad')}, ok?_('● активен'):_('● нет выхода')) ]),
-          E('div',{'class':'mk-card-r'},[E('span',{},_('Сервер')), E('b',{},f[1]||'—')]),
-          E('div',{'class':'mk-card-r'},[E('span',{},_('Внешний IP')), E('b',{},f[3]||'—')]),
-          E('div',{'class':'mk-card-r'},[E('span',{},'SOCKS'), E('b',{},f[2])])
+          E('div',{'class':'mk-card-r'},[E('span',{},_('Сервер')), E('b',{},[f[1]||'—'])]),
+          E('div',{'class':'mk-card-r'},[E('span',{},_('Внешний IP')), E('b',{},[f[3]||'—'])]),
+          E('div',{'class':'mk-card-r'},[E('span',{},'SOCKS'), E('b',{},[f[2]])])
         ]));
       });
       if(!self._tuns.children.length) self._tuns.appendChild(E('div',{'class':'mk-hint'},_('нет туннелей')));
@@ -275,11 +298,11 @@ var Base = baseclass.extend({
         var routed=parseInt(f[3])||0, rc=E('td',{'class':'td','data-label':_('Через туннель')});
         rc.innerHTML = routed>0 ? '<b class="mk-up">● '+routed+'</b>' : '<span style="opacity:.5">—</span>';
         rows.push(E('tr',{'class':'tr'},[
-          E('td',{'class':'td','data-label':_('Устройство')}, f[1]==='?'?'—':f[1]),
-          E('td',{'class':'td','data-label':'IP'}, f[0]),
-          E('td',{'class':'td','data-label':_('Соединений')}, f[2]),
+          E('td',{'class':'td','data-label':_('Устройство')}, [f[1]==='?'?'—':f[1]]),
+          E('td',{'class':'td','data-label':'IP'}, [f[0]]),
+          E('td',{'class':'td','data-label':_('Соединений')}, [f[2]]),
           rc,
-          E('td',{'class':'td','data-label':_('Трафик')}, self.fmtBytes(f[4]))
+          E('td',{'class':'td','data-label':_('Трафик')}, [self.fmtBytes(f[4])])
         ]));
       });
       if(rows.length===1) rows.push(E('tr',{'class':'tr'},[
@@ -301,9 +324,9 @@ var Base = baseclass.extend({
       (t||'').trim().split('\n').forEach(function(l){
         if(!l) return; var f=l.split('|'); if(f.length<6) return;
         var tr=E('tr',{'class':'tr'},[
-          E('td',{'class':'td','data-label':_('Туннель')},f[0]),
-          E('td',{'class':'td','data-label':_('Внешний IP')},f[1]),
-          E('td',{'class':'td','data-label':_('Страна')},f[2])]);
+          E('td',{'class':'td','data-label':_('Туннель')},[f[0]]),
+          E('td',{'class':'td','data-label':_('Внешний IP')},[f[1]]),
+          E('td',{'class':'td','data-label':_('Страна')},[f[2]])]);
         ['YouTube','Telegram','Discord'].forEach(function(lbl,k){
           var td=E('td',{'class':'td','data-label':lbl}); td.innerHTML=code(f[k+3]); tr.appendChild(td); });
         rows.push(tr);
@@ -323,9 +346,18 @@ var Base = baseclass.extend({
       var rank={ok:0,na:1,warn:2,bad:3}, worst='ok';
       self._checks.innerHTML='';
       rows.forEach(function(l){
-        var f=l.split('|'), sev=f[2]||'na', txt=f[3]||'', fix=f[4]||'';
+        // `emit` interpolates the group label into field 3 unescaped, so a label
+        // containing '|' shifted every later field: f[4] stopped being the fix
+        // command and the button ran whatever word landed there (`stop` is a real
+        // subcommand — it drops all routed traffic). The fix is always the LAST
+        // field, the message is everything between; and only the three commands
+        // `mierukop health` can actually ask for are ever executed.
+        var f=l.split('|'), sev=f[2]||'na', wide=(f.length>4);
+        var fix=wide?f[f.length-1]:'';
+        var txt=f.slice(3, wide?f.length-1:f.length).join('|');
+        if(!FIXES[fix]) fix='';
         if((rank[sev]||0)>(rank[worst]||0)) worst=sev;
-        var row=E('div',{'class':'mk-chk '+sev},[ E('i',{}), E('span',{},txt) ]);
+        var row=E('div',{'class':'mk-chk '+sev},[ E('i',{}), E('span',{},[txt]) ]);
         if(fix) row.appendChild(E('button',{'class':'cbi-button cbi-button-apply',
           click: ui.createHandlerFn(self,function(){
             return self.exec(fix.split(' ')).then(function(){ return self.loadHealth(); });
@@ -351,9 +383,9 @@ var Base = baseclass.extend({
       lines.forEach(function(l){
         var f=l.split('|'), sev=f[1]||'info';
         rows.push(E('tr',{'class':'tr'},[
-          E('td',{'class':'td t','data-label':_('Время')}, f[0]||''),
-          E('td',{'class':'td','data-label':_('Источник')}, f[2]||''),
-          E('td',{'class':'td '+(sev==='bad'?'s-bad':(sev==='warn'?'s-warn':'')),'data-label':_('Событие')}, f[3]||'')
+          E('td',{'class':'td t','data-label':_('Время')}, [f[0]||'']),
+          E('td',{'class':'td','data-label':_('Источник')}, [f[2]||'']),
+          E('td',{'class':'td '+(sev==='bad'?'s-bad':(sev==='warn'?'s-warn':'')),'data-label':_('Событие')}, [f[3]||''])
         ]));
       });
       if(rows.length===1) rows.push(E('tr',{'class':'tr'},[

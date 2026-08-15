@@ -5,12 +5,18 @@
 			"uci": [ "mierukop" ],
 			"file": {
 				"/usr/bin/mierukop": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec" ]
 			}
 		},
 		"write": {
 			"uci": [ "mierukop" ],
 			"file": {
 				"/usr/bin/mierukop": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec" ]
 			}
 		}
 	}

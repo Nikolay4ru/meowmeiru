@@ -39,7 +39,7 @@ tunnels() {
 t_tun()   { echo "mtun$1"; }
 t_socks() { echo $(( SOCKS_PORT + $1 )); }
 t_mark()  { printf '0x%x' $(( 0x1042 + $1 )); }
-t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "mierukop_$3"; }
+t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "mierukop_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
 dnsmasq_dropin() { ls /tmp/dnsmasq.d/mierukop-domains.conf /tmp/dnsmasq.*.d/mierukop-domains.conf 2>/dev/null | head -1; }
 
 usage() {
@@ -181,10 +181,27 @@ case "$1" in
 		fi
 		if [ "$old" -gt 14 ]; then emit lists warn "Списки не обновлялись $old дн." "update"
 		else emit lists ok "Списки обновлялись $old дн. назад"; fi
-		if [ -s /tmp/mierukop.wdfail ]; then
-			read n < /tmp/mierukop.wdfail
-			emit wd warn "Сторож фиксирует сбои: $n подряд"
-		fi
+		# Strikes are PER-TUNNEL since the watchdog stopped restarting the whole
+		# service for one flaky group: /tmp/mierukop.wd/<key>. The single global
+		# /tmp/mierukop.wdfail is deleted by watchdog.sh on every run, so reading
+		# it here could only ever report "no strikes".
+		wdf=""
+		for f in /tmp/mierukop.wd/*; do
+			[ -s "$f" ] || continue
+			read -r n < "$f"
+			k=${f##*/}
+			# The watchdog keeps its own bookkeeping in the same directory (the
+			# reload stamp holds an epoch): a strike key is `default` or a GROUP
+			# section and its value is a counter. Without this the stamp was
+			# reported as a group in permanent failure for an hour after every
+			# reload — a yellow traffic light nothing could clear.
+			case "$n" in ''|*[!0-9]*) continue ;; esac
+			if [ "$k" = default ]; then k="Основной"
+			elif [ "$(uci -q get "$CONF.$k")" = "group" ]; then l=$(grp_get "$k" label); [ -n "$l" ] && k="$l"
+			else continue; fi
+			wdf="$wdf $k:$n"
+		done
+		if [ -n "$wdf" ]; then emit wd warn "Сторож фиксирует сбои подряд:$wdf"; fi
 		;;
 	events)
 		# logread is the only journal we have; map it to ts|sev|tag|text for the UI
@@ -216,7 +233,11 @@ case "$1" in
 		echo; echo "=== состояние ==="; /usr/bin/mierukop health
 		echo; echo "=== туннели ==="; /usr/bin/mierukop tunnels
 		echo; echo "=== конфигурация (секреты скрыты) ==="
-		uci show $CONF 2>/dev/null | sed -E "s/\.(password|username)=.*/.\1='***'/"
+		# sub_url belongs in the mask: the subscription URL carries the account
+		# token, so pasting this bundle into a support chat handed over every
+		# server, login and password that the other two names go to the trouble
+		# of hiding — under a header promising the secrets are gone.
+		uci show $CONF 2>/dev/null | sed -E "s/\.(password|username|sub_url)=.*/.\1='***'/"
 		echo; echo "=== события ==="; /usr/bin/mierukop events 60
 		;;
 	route-add|route-direct|route-del)
@@ -238,7 +259,10 @@ case "$1" in
 				else
 					key="$CONF.user.domain"
 				fi
-				uci -q get "$key" | tr ' ' '\n' | grep -qx "$d" && { echo "$d уже маршрутизируется"; exit 0; }
+				# -i because LuCI stores the domain exactly as typed ('Claude.ai')
+				# while $d is lowercased, and -F because an unanchored '.' in a
+				# BRE matched any character (an existing 'tame' hid 't.me')
+				uci -q get "$key" | tr ' ' '\n' | grep -qixF "$d" && { echo "$d уже маршрутизируется"; exit 0; }
 				# dnsmasq honours the FIRST nftset directive per domain (the 1.3.3 trap)
 				prev=$(grep -m1 "^nftset=/$d/" "$(dnsmasq_dropin)" 2>/dev/null | sed 's/.*#//')
 				[ -n "$prev" ] && [ "$prev" != "$setname" ] && \
@@ -246,13 +270,18 @@ case "$1" in
 				uci add_list "$key=$d"; uci commit $CONF ;;
 			route-direct)
 				key="$CONF.user.exclude_domain"; setname=mierukop_direct
-				uci -q get "$key" | tr ' ' '\n' | grep -qx "$d" && { echo "$d уже идёт напрямую"; exit 0; }
+				uci -q get "$key" | tr ' ' '\n' | grep -qixF "$d" && { echo "$d уже идёт напрямую"; exit 0; }
 				uci add_list "$key=$d"; uci commit $CONF ;;
 			route-del)
 				found=0
 				for k in user.domain user.exclude_domain $(group_list | sed 's/$/.domain/'); do
-					uci -q get "$CONF.$k" 2>/dev/null | tr ' ' '\n' | grep -qx "$d" && {
-						uci del_list "$CONF.$k=$d" 2>/dev/null; found=1; }
+					# delete the SPELLING that is stored, not the lowercased input:
+					# `uci del_list ...=claude.ai` silently removes nothing when the
+					# list holds 'Claude.ai', and route-del then reported "не найден"
+					# for a rule the user could plainly see
+					for stored in $(uci -q get "$CONF.$k" 2>/dev/null | tr ' ' '\n' | grep -ixF "$d"); do
+						uci del_list "$CONF.$k=$stored" 2>/dev/null; found=1
+					done
 				done
 				[ "$found" = 1 ] || { echo "$d не найден в правилах"; exit 1; }
 				uci commit $CONF ;;
@@ -342,19 +371,40 @@ case "$1" in
 		# ICMP RTT to EVERY server so the user can pick the best one. Also caches the
 		# result so the LuCI server dropdowns can show "· Nms" without re-pinging.
 		# Output (one per line):  <section>|<label>|<ip>|<avg_ms or -->|<active?0/1>
+		# Single-flight: cron, auto-best and the LuCI button all reach this arm,
+		# and the cron entries coincide at :00/:30. `tee` opens the cache O_TRUNC
+		# and streams line by line over ~15 s of pings, so two runs left a short
+		# or interleaved file for best-server to read a server choice out of.
+		if command -v flock >/dev/null 2>&1; then
+			exec 9>"$STATE_DIR/.pingall.lock"
+			flock -n 9 || { cat "$STATE_DIR/ping.cache" 2>/dev/null; exit 0; }
+		fi
 		act=$(active_server)
 		{ for s in $(server_list); do
 			ip=$(srv_get "$s" address); lbl=$(srv_get "$s" label)
 			rtt=$(ping -c 3 -W 2 "$ip" 2>/dev/null | awk -F'= ' '/min\/avg\/max/{split($2,a,"/"); printf "%.0f", a[2]}')
 			a=0; [ "$s" = "$act" ] && a=1
 			echo "$s|${lbl:-$s}|$ip|${rtt:-—}|$a"
-		done; } | tee "$STATE_DIR/ping.cache"
+		done; } > "$STATE_DIR/ping.cache.new.$$"
+		# publish in one rename: readers never see a half-written cache. The temp
+		# carries the pid because the lock above is conditional — on a build
+		# without flock a shared temp would just move the interleaving from
+		# ping.cache into the file that then gets published as if it were whole.
+		if [ -s "$STATE_DIR/ping.cache.new.$$" ]; then
+			mv "$STATE_DIR/ping.cache.new.$$" "$STATE_DIR/ping.cache"
+		else
+			rm -f "$STATE_DIR/ping.cache.new.$$" "$STATE_DIR/ping.cache"
+		fi
+		cat "$STATE_DIR/ping.cache" 2>/dev/null
 		# latency trend + ring-buffer trims live here (not in the every-minute
 		# sample): the values only change when this cache does
 		pm=$(awk -F'|' '$5==1 && $4 ~ /^[0-9]+$/{print $4; exit}' "$STATE_DIR/ping.cache" 2>/dev/null)
 		[ -n "$pm" ] && echo "$(date +%s),$pm" >> "$STATE_DIR/ping.csv"
 		for f in "$TRAFFIC_LOG" "$STATE_DIR/ping.csv"; do
-			[ -f "$f" ] && [ "$(wc -l < "$f")" -gt 400 ] && { tail -n 180 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
+			# per-PID temp: a shared "$f.tmp" let two trims mv over each other and
+			# throw away the samples `sample` appends every minute
+			[ -f "$f" ] && [ "$(wc -l < "$f")" -gt 400 ] && { tail -n 180 "$f" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"; }
+			rm -f "$f.tmp.$$"
 		done
 		:
 		;;
@@ -376,16 +426,78 @@ case "$1" in
 		  "$leases" /proc/net/nf_conntrack 2>/dev/null | sort -t'|' -k4 -rn
 		;;
 	best-server)
+		# Switching costs a full service restart: every TCP session on every
+		# tunnel dies, fw4 is reloaded per tunnel and dnsmasq is restarted. So a
+		# switch has to be worth it, and it must not fight the watchdog, which
+		# writes the SAME uci key from the other direction. Unguarded, the two
+		# looped: the watchdog rotates away from a server whose mieru port is
+		# blocked, and 15 min later the lowest ICMP time drags the tunnel right
+		# back onto it — the bypass dead most of every quarter hour.
+		WD_DIR=/tmp/mierukop.wd                # per-tunnel strike files (watchdog.sh)
+		SEEN="$STATE_DIR/best.active"          # active_server as WE last left it
+		BLACK="$STATE_DIR/best.blacklist"      # <section> <until-epoch>
+		HYST_MS=25                             # ICMP jitter here is ~3 ms
+		BLACK_TTL=3600
+		now=$(date +%s)
 		[ -s "$STATE_DIR/ping.cache" ] || /usr/bin/mierukop pingall >/dev/null 2>&1
-		best=$(awk -F'|' '$4 ~ /^[0-9]+$/{print $4"|"$1}' "$STATE_DIR/ping.cache" 2>/dev/null | sort -n | head -1)
+		cur=$(active_server)
+		# The watchdog is the authority on "does this tunnel pass traffic": while
+		# it holds a strike on the default tunnel it is bouncing mieru and may
+		# failover on its next run. Two writers, two restarts — stay out.
+		[ -s "$WD_DIR/default" ] && { echo "сторож чинит основной туннель — не переключаемся"; exit 0; }
+		# active_server moved and it was not us: the watchdog failed over off
+		# $prev because it stopped passing traffic (or the user picked another
+		# one). Either way that verdict beats a ping time — hold off $prev for an
+		# hour instead of undoing the decision on the next tick.
+		prev=""; [ -r "$SEEN" ] && read -r prev < "$SEEN"
+		if [ -n "$prev" ] && [ "$prev" != "$cur" ]; then
+			echo "$prev $((now + BLACK_TTL))" >> "$BLACK"
+			logger -t mierukop "best-server: $prev was left for $cur by someone else, ignoring it for ${BLACK_TTL}s"
+		fi
+		echo "$cur" > "$SEEN"
+		if [ -s "$BLACK" ]; then
+			awk -v n="$now" '$2+0 > n' "$BLACK" > "$BLACK.$$" 2>/dev/null
+			mv "$BLACK.$$" "$BLACK" 2>/dev/null || rm -f "$BLACK.$$"
+		fi
+		# Servers the operator took out of the automatic pool are skipped too:
+		# watchdog.sh's failover_pool() drops every `option failover '0'` section
+		# and promises that best-server filters on the same flag. Without it the
+		# operator marks a domestic exit as "never rotate here", the watchdog
+		# obeys, and auto-best hands it the whole bypass 15 minutes later.
+		skip=$(awk '{printf " %s", $1}' "$BLACK" 2>/dev/null)
+		for s in $(server_list); do
+			[ "$(srv_get "$s" failover)" = "0" ] && skip="$skip $s"
+		done
+		best=$(awk -F'|' -v bl="$skip " \
+			'$4 ~ /^[0-9]+$/ && index(bl, " " $1 " ") == 0 {print $4"|"$1}' \
+			"$STATE_DIR/ping.cache" 2>/dev/null | sort -n | head -1)
 		bs=$(echo "$best" | cut -d'|' -f2); bms=$(echo "$best" | cut -d'|' -f1)
 		[ -n "$bs" ] || { echo "no live server"; exit 1; }
-		cur=$(active_server)
-		if [ "$bs" != "$cur" ]; then
-			uci set $CONF.settings.active_server="$bs"; uci commit $CONF
-			echo "switched: $(srv_get "$bs" label) (${bms}ms)"
-			/etc/init.d/mierukop restart >/dev/null 2>&1
-		else echo "already best: $(srv_get "$bs" label) (${bms}ms)"; fi
+		if [ "$bs" = "$cur" ]; then echo "already best: $(srv_get "$bs" label) (${bms}ms)"; exit 0; fi
+		# hysteresis: three live servers sit within 3 ms of each other, and every
+		# reshuffle of that noise used to cost a restart
+		curms=$(awk -F'|' -v c="$cur" '$1==c && $4 ~ /^[0-9]+$/{print $4; exit}' "$STATE_DIR/ping.cache" 2>/dev/null)
+		if [ -n "$curms" ] && [ $(( curms - bms )) -lt "$HYST_MS" ]; then
+			echo "оставляем $(srv_get "$cur" label) (${curms}ms): выигрыш $(( curms - bms ))ms меньше порога ${HYST_MS}ms"
+			exit 0
+		fi
+		# ICMP says the host is up, not that mieru is reachable — a host that
+		# pings while its port is blackholed is exactly the DPI failure mode this
+		# module exists for. Require a completed TCP handshake to the mieru port
+		# first: the port never speaks HTTP, so curl always ends in a timeout and
+		# only %{time_connect} tells "blocked" (0.000000) from "alive".
+		ba=$(srv_get "$bs" address); bp=$(srv_get "$bs" port); bt=$(srv_get "$bs" transport)
+		if [ "$bt" != UDP ] && [ -n "$ba" ] && [ -n "$bp" ]; then
+			tc=$(curl -s -o /dev/null -w '%{time_connect}' --connect-timeout 4 --max-time 5 "http://$ba:$bp/" 2>/dev/null)
+			if [ -z "$(printf '%s' "$tc" | tr -d '0.')" ]; then
+				echo "пропускаем $(srv_get "$bs" label) (${bms}ms): порт $ba:$bp не отвечает на TCP"
+				exit 1
+			fi
+		fi
+		uci set $CONF.settings.active_server="$bs"; uci commit $CONF
+		echo "$bs" > "$SEEN"
+		echo "switched: $(srv_get "$bs" label) (${bms}ms)"
+		/etc/init.d/mierukop restart >/dev/null 2>&1
 		;;
 	auto-best)
 		[ "$(uci -q get $CONF.settings.auto_best)" = "1" ] || exit 0
@@ -529,7 +641,12 @@ case "$1" in
 		fi
 		# upload measured against Google's generate_204 collector is unreliable; keep
 		# Cloudflare __up but treat 0 as "n/a" rather than a real reading
-		tmp="$STATE_DIR/up.bin"; head -c 8000000 /dev/zero > "$tmp" 2>/dev/null
+		# per-PID name + trap: the fixed /tmp/mierukop/up.bin was shared by two
+		# clicks from two browser tabs (one run's rm pulled the file out from
+		# under the other's upload) and was left behind in tmpfs whenever rpcd
+		# killed the exec mid-test
+		tmp="$STATE_DIR/up.$$.bin"; trap 'rm -f "$tmp"' EXIT INT TERM
+		head -c 8000000 /dev/zero > "$tmp" 2>/dev/null
 		up=$(curl -fs --proxy "$PROXY" --max-time 10 -o /dev/null \
 			-w '%{speed_upload}' --data-binary @"$tmp" \
 			"https://speed.cloudflare.com/__up" 2>/dev/null)
@@ -602,7 +719,20 @@ case "$1" in
 				echo "added server $id ($3)" ;;
 			del)
 				[ -n "$3" ] || { echo "usage: mierukop server del <name>"; exit 1; }
-				uci -q delete $CONF.$3; uci commit $CONF; echo "deleted $3" ;;
+				# type guard, the same one `server use` below already had: without
+				# it `mierukop server del settings` deleted the settings section —
+				# enabled, ports, lists, everything — printed "deleted settings"
+				# and left the bypass off from the next boot on
+				[ "$(uci -q get "$CONF.$3")" = "server" ] || { echo "no such server: $3 (mierukop server list)"; exit 1; }
+				# a group that keeps the name of a deleted server still gets its
+				# tunnel built, with an empty mieru server array — its traffic is
+				# marked and then black-holed instead of falling back
+				for g in $(group_list); do
+					uci -q get "$CONF.$g.server" | tr ' ' '\n' | grep -qxF "$3" && {
+						uci -q del_list "$CONF.$g.server=$3"; echo "removed from group $g"; }
+				done
+				[ "$(uci -q get $CONF.settings.active_server)" = "$3" ] && uci -q delete $CONF.settings.active_server
+				uci -q delete "$CONF.$3"; uci commit $CONF; echo "deleted $3" ;;
 			use)
 				[ -n "$3" ] || { echo "usage: mierukop server use <name>"; exit 1; }
 				[ "$(uci -q get $CONF.$3)" = "server" ] || { echo "no such server: $3"; exit 1; }
@@ -623,7 +753,17 @@ case "$1" in
 			add)
 				# mierukop group add <name> <server-section[ server2]> <list> [list2...]
 				[ $# -ge 5 ] || { echo "usage: mierukop group add <name> <server-section> <list> [list2...]"; echo "  серверы: mierukop server list"; exit 1; }
+				# `tr -cd` deletes every byte outside ASCII alnum, and UTF-8
+				# Cyrillic/emoji have none — 'Ютуб' and 'Реклама' both collapsed
+				# to the bare prefix "g", so the second group add silently ate the
+				# first one's label, server and lists. Hash instead of dropping:
+				# same name -> same section on a re-run.
 				gn="g$(echo "$3" | tr -cd 'a-zA-Z0-9')"
+				[ "$gn" = g ] && gn="g$(printf '%s' "$3" | md5sum | cut -c1-8)"
+				[ "$(uci -q get "$CONF.$gn")" = "group" ] && {
+					echo "группа $gn ($(uci -q get $CONF.$gn.label)) уже существует — выберите другое имя"
+					echo "  изменить серверы: mierukop group server $gn <server>"
+					echo "  удалить: mierukop group del $gn"; exit 1; }
 				sv="$4"; [ "$(uci -q get $CONF.$sv)" = "server" ] || {
 					# try to resolve by label substring
 					for s in $(server_list); do case "$(srv_get "$s" label)" in *"$4"*) sv="$s"; break;; esac; done; }
@@ -635,7 +775,10 @@ case "$1" in
 				echo "group $gn: lists [$*] via $(srv_get "$sv" label); run: mierukop restart && mierukop update" ;;
 			del)
 				[ -n "$3" ] || { echo "usage: mierukop group del <name>"; exit 1; }
-				uci -q delete $CONF.$3; uci commit $CONF; echo "deleted $3; run: mierukop restart" ;;
+				# same type guard as `server del`: this deleted any section it was
+				# handed, settings included
+				[ "$(uci -q get "$CONF.$3")" = "group" ] || { echo "no such group: $3 (mierukop group list)"; exit 1; }
+				uci -q delete "$CONF.$3"; uci commit $CONF; echo "deleted $3; run: mierukop restart" ;;
 			server)
 				# mierukop group server <name> <server-section[ server2 ...]>  (set the group's servers)
 				[ -n "$3" ] && [ -n "$4" ] || { echo "usage: mierukop group server <name> <server-section...>"; exit 1; }
@@ -651,27 +794,64 @@ case "$1" in
 		curl -fsSL --max-time 30 "$url" -o "$tmp" 2>/dev/null || { echo "download failed"; exit 1; }
 		# parse each `type: mieru` proxy block -> TSV (name server port transport user pass mux)
 		awk '
+		  # A YAML scalar: strip only a MATCHED surrounding quote pair. The old
+		  # blanket gsub(/"/,"",v) deleted quotes INSIDE the value too, and a
+		  # generated password may well contain one. Only an unquoted scalar can
+		  # carry a trailing "# comment".
+		  function val(l,   v) {
+		    v = l
+		    sub(/^[^:]*:[[:space:]]*/, "", v)
+		    sub(/[[:space:]]+$/, "", v)
+		    if (v ~ /^".*"$/) return substr(v, 2, length(v) - 2)
+		    sub(/[[:space:]]+#.*$/, "", v)
+		    return v
+		  }
 		  /^[[:space:]]*-[[:space:]]*name:/ {
 		    if(t=="mieru"&&s!="") print n"\t"s"\t"p"\t"tr"\t"u"\t"pw"\t"mx;
-		    n=$0; sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/,"",n); gsub(/"/,"",n);
+		    n=val($0);
 		    t="";s="";p="";tr="TCP";u="";pw="";mx="MULTIPLEXING_MIDDLE"; next }
-		  /^[[:space:]]*type:/        {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);t=v}
-		  /^[[:space:]]*server:/      {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);s=v}
-		  /^[[:space:]]*port:/        {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);p=v}
-		  /^[[:space:]]*transport:/   {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);tr=v}
-		  /^[[:space:]]*username:/    {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);u=v}
-		  /^[[:space:]]*password:/    {v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);pw=v}
-		  /^[[:space:]]*multiplexing:/{v=$0;sub(/^[^:]*:[[:space:]]*/,"",v);gsub(/"/,"",v);mx=v}
+		  /^[[:space:]]*type:/        {t=val($0)}
+		  /^[[:space:]]*server:/      {s=val($0)}
+		  /^[[:space:]]*port:/        {p=val($0)}
+		  /^[[:space:]]*transport:/   {tr=val($0)}
+		  /^[[:space:]]*username:/    {u=val($0)}
+		  /^[[:space:]]*password:/    {pw=val($0)}
+		  /^[[:space:]]*multiplexing:/{mx=val($0)}
 		  END { if(t=="mieru"&&s!="") print n"\t"s"\t"p"\t"tr"\t"u"\t"pw"\t"mx }
 		' "$tmp" > "$tsv"
 		cnt=$(grep -c . "$tsv" 2>/dev/null)
 		[ "${cnt:-0}" -gt 0 ] || { echo "no mieru servers found in subscription"; rm -f "$tmp" "$tsv"; exit 1; }
-		# drop existing server sections, import fresh
-		for s in $(server_list); do uci -q delete $CONF.$s; done
-		TAB=$(printf '\t'); first=""; muxset=""
-		while IFS="$TAB" read name srv port tr user pass mux; do
+		# Import in place. Wiping every server section first orphaned the section
+		# NAMES that group.server and settings.active_server store: init.d then
+		# built those tunnels with an empty mieru server array, so the group's
+		# traffic was marked and black-holed. A section that still carries the
+		# same endpoint therefore keeps its name.
+		find_srv() {  # $1=address $2=port -> existing server section, if any
+			local s
+			for s in $(server_list); do
+				[ "$(srv_get "$s" address)" = "$1" ] && [ "$(srv_get "$s" port)" = "$2" ] && { echo "$s"; return; }
+			done
+		}
+		TAB=$(printf '\t'); first=""; muxset=""; keep=""; imported=0
+		# read -r: without it a backslash in a generated password is eaten before
+		# it ever reaches uci, and mieru then fails to authenticate everywhere —
+		# indistinguishable from the DPI blocking this module fights
+		while IFS="$TAB" read -r name srv port tr user pass mux; do
 			[ -n "$srv" ] || continue
-			id="srv$(echo "$srv" | tr -cd '0-9')"
+			# a non-numeric port lands verbatim in the mieru JSON and makes the
+			# whole profile invalid, taking every tunnel down with it
+			case "$port" in ''|*[!0-9]*) echo "  skipped $srv: bad port '$port'"; continue ;; esac
+			id=$(find_srv "$srv" "$port")
+			if [ -n "$id" ]; then
+				case " $keep " in
+					*" $id "*) echo "  skipped duplicate $srv:$port"; continue ;;
+				esac
+			else
+				# NOT the digits of the address: 203.0.113.9 and 20.30.113.9
+				# squeeze to the same id, and hostnames to none at all, so the
+				# second server silently overwrote the first
+				id="srv$(printf '%s' "$srv:$port" | md5sum | cut -c1-10)"
+			fi
 			uci set $CONF.$id=server
 			uci set $CONF.$id.label="$name"
 			uci set $CONF.$id.address="$srv"
@@ -679,15 +859,47 @@ case "$1" in
 			uci set $CONF.$id.transport="${tr:-TCP}"
 			uci set $CONF.$id.username="$user"
 			uci set $CONF.$id.password="$pass"
+			keep="$keep $id"; imported=$((imported+1))
 			[ -z "$first" ] && first="$id"
 			[ -z "$muxset" ] && muxset="$mux"
 		done < "$tsv"
-		[ -n "$first" ] && uci set $CONF.settings.active_server="$first"
+		[ "$imported" -gt 0 ] || { echo "subscription parsed, but no usable server in it"; rm -f "$tmp" "$tsv"; exit 1; }
+		# only now drop what the subscription no longer offers
+		for s in $(server_list); do
+			case " $keep " in *" $s "*) continue ;; esac
+			uci -q delete "$CONF.$s"; echo "  removed $s (gone from subscription)"
+		done
+		# repair the references the removal above just broke — an empty group
+		# server list is not "no tunnel", it is a tunnel that swallows traffic
+		for g in $(group_list); do
+			gs=$(grp_get "$g" server); new=""; dropped=0
+			for s in $gs; do
+				case " $keep " in
+					*" $s "*) new="$new $s" ;;
+					*) dropped=1 ;;
+				esac
+			done
+			[ "$dropped" = 1 ] || continue
+			uci -q delete "$CONF.$g.server"
+			for s in $new; do uci add_list "$CONF.$g.server=$s"; done
+			if [ -z "$new" ]; then
+				uci add_list "$CONF.$g.server=$first"
+				echo "  group $g lost every server -> $(srv_get "$first" label)"
+			else
+				echo "  group $g: dropped server(s) gone from subscription"
+			fi
+		done
+		# do not undo what best-server/watchdog chose: only move the active
+		# server when the section it names no longer exists
+		aprev=$(uci -q get $CONF.settings.active_server); akeep=0
+		[ -n "$aprev" ] && case " $keep " in *" $aprev "*) akeep=1 ;; esac
+		[ "$akeep" = 1 ] || uci set $CONF.settings.active_server="$first"
 		[ -n "$muxset" ] && uci set $CONF.settings.multiplexing="$muxset"
 		uci set $CONF.settings.sub_url="$url"   # remember subscription for auto-refresh
 		uci commit $CONF
 		rm -f "$tmp" "$tsv"
-		echo "imported $cnt mieru server(s); mux=$muxset; active=$first"
+		# $cnt counts TSV rows; report what actually reached uci
+		echo "imported $imported mieru server(s); mux=$muxset; active=$(uci -q get $CONF.settings.active_server)"
 		echo "all share one login -> mieru fails over between them natively."
 		echo "run: mierukop restart"
 		;;
@@ -701,7 +913,13 @@ case "$1" in
 		echo "saved to server '$sv'; run: mierukop restart"
 		;;
 	count)
-		c=$(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' | wc -l)
+		# Count ELEMENTS, with the very expression update-lists.sh uses to write
+		# this same file: the sets are `flags interval; auto-merge`, so nft prints
+		# merged neighbours as ranges and DNS-learned hosts bare, and the old
+		# '/prefix' regex matched neither (49 against 128 on this router). Two
+		# writers with two answers meant the dashboard showed whichever ran last.
+		c=$(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | \
+			grep -oE '([0-9]+\.){3}[0-9]+(/[0-9]+)?(-([0-9]+\.){3}[0-9]+)?' | wc -l)
 		echo "$c" > "$STATE_DIR/subnets.count"; echo "$c" ;;
 	add-domain)
 		[ -n "$2" ] || { echo "usage: mierukop add-domain <domain>"; exit 1; }

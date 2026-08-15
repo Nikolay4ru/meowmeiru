@@ -28,8 +28,20 @@ return lib.page({
     s.anonymous=true; s.addremove=false;
     o=s.option(form.Flag,'auto_best',_('Авто-выбор лучшего сервера'),
       _('Каждые 15 минут измерять пинг и переключаться на самый быстрый сервер.'));
+    // Without sub_url the nightly `mierukop sub-refresh` exits on its very first
+    // line — no error, no journal entry. The URL was written only by the
+    // «Импортировать» button on the Servers page and there was nowhere at all to
+    // see it, so the switch below sat ON doing nothing and no one could tell.
+    o=s.option(form.Value,'sub_url',_('Ссылка на подписку'),
+      _('Формат clash. Обычно заполняется кнопкой «Импортировать» на вкладке «Серверы»; без неё авто-обновление невозможно.'));
+    o.optional=true; o.placeholder='https://…/sub/…?format=clash';
     o=s.option(form.Flag,'sub_auto',_('Авто-обновление подписки'),
       _('Раз в сутки заново скачивать сохранённую подписку — подтягивает новые серверы и сменившиеся IP.'));
+    // only offer the switch once there is something to refresh; retain keeps an
+    // already-enabled flag when this page is saved with no URL yet — without it
+    // the first save would silently drop sub_auto='1' and auto-refresh would
+    // stay off even after a later «Импортировать»
+    o.depends('sub_url', /.+/); o.retain=true;
     o=s.option(form.Flag,'auto_update',_('Авто-обновление модуля'),
       _('Раз в неделю проверять GitHub и автоматически ставить новую версию meowMieru.'));
     o=s.option(form.Value,'update_interval',_('Обновление списков (часы)'));
@@ -52,9 +64,15 @@ return lib.page({
             self._upd.innerHTML=' '+_('проверяю…');
             return self.exec(['update-check']).then(function(t){
               var p=self.parse(t);
-              if(p.status==='update-available') self._upd.innerHTML=' <b class="mk-warn">'+_('доступно: ')+(p.latest||'')+'</b>';
-              else if(p.status==='up-to-date') self._upd.innerHTML=' <b class="mk-up">'+_('актуальная версия')+'</b>';
-              else self._upd.innerHTML=' <b class="mk-down">'+_('GitHub недоступен')+'</b>';
+              // p.latest is whatever the remote VERSION file contained — same
+              // innerHTML sink as the tunnel cards, so build the node instead
+              var say=function(cls,txt){
+                self._upd.innerHTML=''; self._upd.appendChild(document.createTextNode(' '));
+                self._upd.appendChild(E('b',{'class':cls},[txt]));
+              };
+              if(p.status==='update-available') say('mk-warn',_('доступно: ')+(p.latest||''));
+              else if(p.status==='up-to-date') say('mk-up',_('актуальная версия'));
+              else say('mk-down',_('GitHub недоступен'));
               return null;
             });
           }),

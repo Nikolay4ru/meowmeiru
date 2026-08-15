@@ -68,11 +68,29 @@ return lib.page({
           self.mkBtn('subimport','cbi-button-action',_('Импортировать'), function(){
             var url=(subInput.value||'').trim();
             if(!url) return Promise.resolve(_('Укажи ссылку на подписку.'));
-            return self.exec(['sub',url]).then(function(t){
-              return self.exec(['restart']).then(function(){
-                return self.exec(['update']).then(function(u){
+            // Import rewrites the server list: whatever the subscription no
+            // longer offers is deleted together with its username/password.
+            // /etc/config/mierukop is 0600 and is backed up nowhere, and this
+            // used to happen on one click with no question asked.
+            var n=(uci.sections('mierukop','server')||[]).length;
+            if(!confirm(_('Импорт заменит список серверов содержимым подписки (сейчас серверов: %d). Серверы, которых нет в подписке, будут удалены. Продолжить?').format(n)))
+              return Promise.resolve(_('Отменено.'));
+            return self.run(['sub',url]).then(function(r){
+              // `sub` validates the download AND the parse before it touches
+              // uci, so a non-zero code means the config was not modified. The
+              // code used to be discarded and the page reloaded 2 s later
+              // regardless, wiping the only error text — a failed import was
+              // indistinguishable from a successful one.
+              if(r.code) return r.out+'\n'+_('Импорт не выполнен — серверы не изменены.');
+              return self.run(['restart']).then(function(rr){
+                return self.run(['update']).then(function(ru){
+                  // keep the failing restart's own output: the message below
+                  // sends the user to "вывод выше", which has to actually be there
+                  var txt=r.out+'\n'+(rr.code?rr.out+'\n':'')+ru.out;
+                  if(rr.code||ru.code)
+                    return txt+'\n'+_('Серверы импортированы, но применить не удалось — страницу не перезагружаю, разберитесь по выводу выше.');
                   setTimeout(function(){ location.reload(); }, 2000);
-                  return (t||'')+'\n'+(u||'')+'\n'+_('Готово, обновляю страницу…');
+                  return txt+'\n'+_('Готово, обновляю страницу…');
                 });
               });
             });
