@@ -180,6 +180,22 @@ strike() {  # $1 = key -> new consecutive-failure count
 }
 clear_strike() { rm -f "$STATE_DIR/$1"; }
 
+# A bounce that works erases the strike, so a default tunnel that fails every
+# OTHER run is bounced for ever and never reaches strike 2 — failover never
+# fires and the operator ends up switching servers by hand. Observed live:
+# "probe failed, strike 1/2" at 10:50 and again at 11:00, with a passing probe
+# in between resetting the count both times. Consecutive failures are the wrong
+# unit here; repeated repair IS the failure. Count bounces in a window instead.
+FLAP_WINDOW=1800   # 30 min
+FLAP_MAX=3
+flaps() {  # record this bounce, return how many happened inside the window
+	local f="$STATE_DIR/flaps" now cutoff
+	now=$(date +%s); cutoff=$(( now - FLAP_WINDOW ))
+	echo "$now" >> "$f"
+	awk -v c="$cutoff" '$1+0 > c' "$f" > "$f.$$" 2>/dev/null && mv "$f.$$" "$f" || rm -f "$f.$$"
+	wc -l < "$f" 2>/dev/null | tr -d ' '
+}
+
 # init.d refuses to start a group whose every `option server` is gone (a deleted
 # section, or a subscription refresh that re-derived the section ids from new
 # addresses), so that group has no mieru, no hev and no mtunN BY DESIGN. Probing
@@ -260,10 +276,15 @@ if [ "$deffail" -lt 2 ]; then
 	# repair what actually broke: the routing plane, or the transport behind it
 	if [ -n "$defpath" ]; then
 		repair_path 0 default "" "default tunnel"
-	else
-		bounce "$BASE" "default tunnel"
+		exit 0
 	fi
-	exit 0
+	bounce "$BASE" "default tunnel"
+	n=$(flaps)
+	if [ "${n:-1}" -lt "$FLAP_MAX" ]; then exit 0; fi
+	# bounced too often to keep blaming the local daemon — fall through to the
+	# failover below and let it move off this exit
+	logger -t mierukop-wd "default tunnel bounced $n times in ${FLAP_WINDOW}s — escalating to failover"
+	rm -f "$STATE_DIR/flaps"
 fi
 
 servers=$(failover_pool)
@@ -286,3 +307,4 @@ else
 fi
 /etc/init.d/mierukop restart
 clear_strike default
+rm -f "$STATE_DIR/flaps"
