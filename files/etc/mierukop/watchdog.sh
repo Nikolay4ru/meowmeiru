@@ -72,6 +72,52 @@ probe() {  # $1 = socks port, $2 = url
 # legitimately answer 206 or 307, and a false failure here costs a bounce.
 ok() { case "$1" in 2??|3??) return 0 ;; *) return 1 ;; esac; }
 
+# mieru derives its session keys from the wall clock, so a router whose time is
+# wrong fails EVERY handshake while TCP still connects: HandshakeErrors climbs
+# and ConnErrors stays 0. That is indistinguishable from a dead exit here, and
+# the failover below would walk the entire pool, bouncing off each server in
+# turn, without once touching the actual fault. It also cannot resolve itself —
+# settings.routed_dns is resolved INSIDE the tunnel, so a dead tunnel means no
+# DNS, and any NTP server named by hostname becomes unreachable at exactly the
+# moment it is needed. Observed live: a power cycle left a router two hours
+# behind and it stayed offline for four hours with a perfectly healthy WAN.
+# IP literals need no DNS, which is the whole point of them being literals.
+# Only ever called after a probe has already failed, so a healthy router pays
+# nothing for it. Returns 0 only when the clock was actually MOVED, so the caller
+# can restart the tunnels instead of recording a strike against a server that was
+# never at fault.
+NTP_FALLBACK_IPS="89.109.251.21 194.190.168.1 162.159.200.1"
+CLOCK_TOLERANCE=60
+clock_resync() {
+	local ip pid waited before after drift
+	for ip in $NTP_FALLBACK_IPS; do
+		before=$(date +%s)
+		# busybox ntpd -q keeps retrying a silent server instead of giving up, so it
+		# gets an explicit deadline rather than a trusted exit.
+		ntpd -q -n -p "$ip" >/dev/null 2>&1 &
+		pid=$!
+		waited=0
+		while [ "$waited" -lt 12 ] && kill -0 "$pid" 2>/dev/null; do
+			sleep 1; waited=$((waited+1))
+		done
+		kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+		after=$(date +%s)
+		# Whatever is left after subtracting the seconds this loop itself burned is
+		# the step ntpd made.
+		drift=$(( after - before - waited ))
+		[ "$drift" -lt 0 ] && drift=$(( 0 - drift ))
+		if [ "$drift" -gt "$CLOCK_TOLERANCE" ]; then
+			logger -t mierukop-wd "clock was ${drift}s out — corrected from $ip, restarting tunnels"
+			return 0
+		fi
+		# A server that answered and still left the clock alone settles the question:
+		# the time is right, so the tunnel is down for some other reason. Only a
+		# server that never answered (hit the deadline) justifies trying the next.
+		[ "$waited" -lt 12 ] && return 1
+	done
+	return 1
+}
+
 # The probe above only ever talks to mieru on 127.0.0.1, so it proves the
 # transport and the exit — and nothing else. It never touches the nft set, the
 # fwmark rule or mtunN, so a tunnel whose routing plane collapsed probes
@@ -239,6 +285,14 @@ if [ -n "$defpath" ]; then
 elif ok "$(probe "$BASE" "$(probe_url "")")"; then
 	clear_strike default
 else
+	# Before blaming the exit: a clock that drifted breaks every handshake mieru
+	# makes, and no amount of failover repairs that. Check it first, and only fall
+	# through to the server-level escalation once the time is known to be right.
+	if clock_resync; then
+		/etc/init.d/mierukop restart >/dev/null 2>&1
+		clear_strike default
+		exit 0
+	fi
 	deffail=$(strike default)
 	logger -t mierukop-wd "default tunnel (socks $BASE) probe failed, strike $deffail/2"
 fi

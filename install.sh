@@ -184,6 +184,35 @@ Installed-Time: $(date +%s)
 
 STAT
 
+# ── clock: NTP by IP, or the tunnel can never come back ──
+# mieru derives its session keys from the wall clock, so a router whose time is
+# wrong fails EVERY handshake while TCP still connects — HandshakeErrors climbs
+# and ConnErrors stays 0, which reads like a dead server and is not one.
+# Nothing recovers from that by itself here, because the recovery path runs
+# through the very tunnel that is down: settings.routed_dns is resolved INSIDE
+# the tunnel, so no tunnel means no DNS, and an NTP server written as a hostname
+# can then never be reached to correct the clock that broke the tunnel. A router
+# that reboots with a skewed clock stays dead until a human sets the date by
+# hand. Observed live: a power cycle left one router two hours behind and it was
+# offline for four hours with a perfectly healthy WAN.
+# IP literals break the loop — they need no DNS. The first two are outside the
+# routed sets on every deployment seen so far, so they stay reachable even while
+# the tunnel is down; the Google/Cloudflare addresses are kept as later
+# fallbacks precisely because they MAY be inside a routed set.
+if [ -z "$(uci -q get system.ntp.server | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')" ]; then
+	uci -q delete system.ntp.server
+	uci add_list system.ntp.server='89.109.251.21'   # ntp1.vniiftri.ru
+	uci add_list system.ntp.server='194.190.168.1'   # ntp.ix.ru
+	uci add_list system.ntp.server='216.239.35.0'    # time.google.com
+	uci add_list system.ntp.server='162.159.200.1'   # time.cloudflare.com
+	uci add_list system.ntp.server='0.ru.pool.ntp.org'
+	uci set system.ntp.enabled='1'
+	uci commit system
+	/etc/init.d/sysntpd enable >/dev/null 2>&1
+	/etc/init.d/sysntpd restart >/dev/null 2>&1
+	say "NTP set to IP literals so a skewed clock can always resync"
+fi
+
 # ── cron: refresh lists daily ──
 CRON="/etc/crontabs/root"; touch "$CRON"
 grep -q 'mierukop/update-lists.sh download' "$CRON" || \

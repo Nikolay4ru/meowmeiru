@@ -2,3 +2,7 @@
 *.bak
 files/etc/mierukop/lists/*.lst
 !files/etc/mierukop/lists/exclude.lst
+
+# внутренние заметки: содержат адреса и топологию сети — не публикуем
+.DS_Store
+docs/
