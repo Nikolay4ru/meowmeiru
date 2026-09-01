@@ -894,7 +894,23 @@ case "$1" in
 		aprev=$(uci -q get $CONF.settings.active_server); akeep=0
 		[ -n "$aprev" ] && case " $keep " in *" $aprev "*) akeep=1 ;; esac
 		[ "$akeep" = 1 ] || uci set $CONF.settings.active_server="$first"
-		[ -n "$muxset" ] && uci set $CONF.settings.multiplexing="$muxset"
+		# Same reasoning as active_server just above, for the same reason: a refresh
+		# updates the SERVER LIST, it does not get to overrule a tuning decision made
+		# on this router. The subscription ships whatever level the panel happens to
+		# carry, and applying it unconditionally silently undoes a level that was
+		# measured here. Observed live: the panel ships MULTIPLEXING_LOW, which on a
+		# router fronting a SOCKS proxy measured 27.6 Mbit/s against 47.3 on HIGH —
+		# every nightly refresh would have quietly handed that loss back, and the
+		# symptom (slow, not broken) is one nobody thinks to blame a refresh for.
+		# multiplexing_pin='1' marks the decision as the operator's; without it the
+		# subscription still wins, so untuned deployments behave exactly as before.
+		if [ -n "$muxset" ]; then
+			if [ "$(uci -q get $CONF.settings.multiplexing_pin)" = "1" ]; then
+				echo "  multiplexing pinned to $(uci -q get $CONF.settings.multiplexing) — subscription's $muxset ignored"
+			else
+				uci set $CONF.settings.multiplexing="$muxset"
+			fi
+		fi
 		uci set $CONF.settings.sub_url="$url"   # remember subscription for auto-refresh
 		uci commit $CONF
 		rm -f "$tmp" "$tsv"
