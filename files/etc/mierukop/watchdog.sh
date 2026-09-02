@@ -276,6 +276,26 @@ failover_pool() {
 		done
 }
 
+# The exits failover='0' opted out of — a Russian exit for a fleet whose whole
+# point is leaving Russia, say. "Would rather not" is not "never": when every
+# preferred exit is down, rotating between dead servers for ever serves nobody,
+# and an unwanted exit is the difference between degraded and no connectivity at
+# all. Seen live: seven of eight servers went down together, and the pool walked
+# the dead six in a five-minute loop while the one exit that worked sat excluded
+# — the routers could not recover on their own and had to be moved by hand.
+last_resort_pool() {
+	uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=server\$/\1/p" \
+		| while read -r s; do
+			[ "$(uci -q get "$CONF.$s.failover")" = "0" ] && echo "$s"
+		done
+}
+
+# Rotations since the last successful probe. Reset on success, so this counts a
+# losing streak rather than lifetime churn; only a streak long enough to have
+# walked the whole preferred pool justifies reaching for the opted-out exits.
+ROT_STAMP="$STATE_DIR/rotations"
+rotations() { local n=0; [ -r "$ROT_STAMP" ] && read -r n < "$ROT_STAMP"; case "$n" in ''|*[!0-9]*) n=0 ;; esac; echo "$n"; }
+
 # ---- default tunnel -------------------------------------------------------
 deffail=0
 defpath=$(path_fault 0 default "")
@@ -284,6 +304,7 @@ if [ -n "$defpath" ]; then
 	logger -t mierukop-wd "default tunnel data path broken: $defpath, strike $deffail/2"
 elif ok "$(probe "$BASE" "$(probe_url "")")"; then
 	clear_strike default
+	rm -f "$ROT_STAMP"   # the streak is over; opted-out exits go back off the table
 else
 	# Before blaming the exit: a clock that drifted breaks every handshake mieru
 	# makes, and no amount of failover repairs that. Check it first, and only fall
@@ -343,6 +364,19 @@ fi
 
 servers=$(failover_pool)
 cnt=$(echo $servers | wc -w)
+# Once the losing streak is as long as the preferred pool, every preferred exit
+# has had its turn and failed. Widen to the opted-out exits rather than keep
+# cycling the dead ones — loudly, because a fleet quietly leaving through the
+# very exit it was configured to avoid must not pass unnoticed.
+rot=$(rotations)
+if [ "$rot" -ge "$cnt" ]; then
+	extra=$(last_resort_pool)
+	if [ -n "$extra" ]; then
+		servers="$servers $extra"
+		cnt=$(echo $servers | wc -w)
+		logger -t mierukop-wd "every preferred exit failed ($rot rotations) — falling back to opted-out exits"
+	fi
+fi
 # Rotate only when the EXIT is what failed. A broken data path is the router's
 # own doing — swapping servers would blame the wrong end and, five minutes at a
 # time, walk the tunnel through the whole pool while the restart below is the
@@ -355,6 +389,7 @@ if [ -z "$defpath" ] && [ "$(uci -q get $CONF.settings.failover)" != "0" ] && [ 
 	# exactly what should happen
 	[ -n "$next" ] || next=$(echo $servers | awk '{print $1}')
 	uci set $CONF.settings.active_server="$next"; uci commit $CONF
+	echo $(( rot + 1 )) > "$ROT_STAMP"
 	logger -t mierukop-wd "failover: $cur -> $next, restarting"
 else
 	logger -t mierukop-wd "default tunnel down twice — restarting mierukop"
