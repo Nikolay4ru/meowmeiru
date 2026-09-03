@@ -841,12 +841,19 @@ case "$1" in
 		    if (net == "") net = "tcp"
 		    print "vless\t"d(n)"\t"s"\t"p"\t"net"\t"d(uuid)"\t"d(alpn)"\t"d(xtra)"\t"d(sni)"\t"d(path)"\t"d(hh)"\t"d(sec)"\t"d(flow)"\t"d(fp)"\t"d(xmode)
 		  }
-		  /^[[:space:]]*-[[:space:]]*name:/ {
+		  # A new proxy begins at the first "- <key>:" of a YAML sequence item — NOT at
+		  # "- name:". Nothing orders the keys, and this panel emits them alphabetically,
+		  # so the block starts with "- alpn:" and a name-anchored rule never fires: every
+		  # proxy folds into one record with an empty label and alpn concatenated five
+		  # times over. The line is then rewritten as a plain key so the handlers below
+		  # still see it. An alpn list item ("- h2") carries no colon and is left alone.
+		  /^[[:space:]]*-[[:space:]]*[A-Za-z0-9_-]+:/ {
 		    emit()
-		    n=val($0)
-		    t="";s="";p=""
+		    n="";t="";s="";p=""
 		    uuid="";sni="";path="";hh="";sec="";flow="";fp="";xmode="";net="";alpn="";xtra=""
-		    next }
+		    sub(/^[[:space:]]*-[[:space:]]*/, "  ")
+		  }
+		  /^[[:space:]]*name:/          {n=val($0)}
 		  /^[[:space:]]*type:/         {t=val($0)}
 		  /^[[:space:]]*server:/       {s=val($0)}
 		  /^[[:space:]]*port:/         {p=val($0)}
@@ -855,6 +862,13 @@ case "$1" in
 		  /^[[:space:]]*network:/      {net=val($0)}
 		  /^[[:space:]]*(client-fingerprint|fingerprint):/ {fp=val($0)}
 		  /^[[:space:]]*alpn:/         {alpn=val($0); gsub(/[][ ]/, "", alpn)}
+		  # Clash lists alpn as a YAML sequence, one value per line under the key.
+		  /^[[:space:]]*-[[:space:]]*(h2|h3|http\/1\.1)[[:space:]]*$/ {
+		    v=$0; sub(/^[[:space:]]*-[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v)
+		    alpn = (alpn == "") ? v : alpn "," v }
+		  # xhttp-opts carries the padding under its own key; the URI form calls the
+		  # same thing `extra`, so normalise to that rather than inventing a field.
+		  /^[[:space:]]*x-padding-bytes:/ {xtra="{\"xPaddingBytes\":\"" val($0) "\"}"}
 		  /^[[:space:]]*flow:/         {flow=val($0)}
 		  /^[[:space:]]*tls:/          {if (val($0) == "true") sec="tls"}
 		  /^[[:space:]]*path:/         {if (path == "") path=val($0)}
@@ -924,10 +938,19 @@ case "$1" in
 		# built those tunnels with an empty xray server array, so the group's
 		# traffic was marked and black-holed. A section that still carries the
 		# same endpoint therefore keeps its name.
-		find_srv() {  # $1=address $2=port -> existing server section, if any
+		# What makes two entries the SAME server. Address and port are not enough:
+		# a panel can front several exits behind one TLS endpoint and tell them apart
+		# by the XHTTP path — five "countries" arriving as one host:port with paths
+		# /api/video/hls, /api/audio/track and so on. Keyed on host:port alone, four
+		# of those five collapse into one section and the country choice is silently
+		# lost; the import even says "skipped duplicate" while doing it.
+		find_srv() {  # $1=address $2=port $3=path -> existing server section, if any
 			local s
 			for s in $(server_list); do
-				[ "$(srv_get "$s" address)" = "$1" ] && [ "$(srv_get "$s" port)" = "$2" ] && { echo "$s"; return; }
+				[ "$(srv_get "$s" address)" = "$1" ] || continue
+				[ "$(srv_get "$s" port)" = "$2" ] || continue
+				[ "$(srv_get "$s" path)" = "$3" ] || continue
+				echo "$s"; return
 			done
 		}
 		TAB=$(printf '	'); first=""; keep=""; imported=0
@@ -947,16 +970,17 @@ case "$1" in
 			# a non-numeric port lands verbatim in the generated JSON and makes the
 			# whole profile invalid, taking every tunnel down with it
 			case "$port" in ''|*[!0-9]*) echo "  skipped $srv: bad port '$port'"; continue ;; esac
-			id=$(find_srv "$srv" "$port")
+			id=$(find_srv "$srv" "$port" "$path")
 			if [ -n "$id" ]; then
 				case " $keep " in
-					*" $id "*) echo "  skipped duplicate $srv:$port"; continue ;;
+					*" $id "*) echo "  skipped duplicate $srv:$port$path"; continue ;;
 				esac
 			else
 				# NOT the digits of the address: 203.0.113.9 and 20.30.113.9
 				# squeeze to the same id, and hostnames to none at all, so the
-				# second server silently overwrote the first
-				id="srv$(printf '%s' "$srv:$port" | md5sum | cut -c1-10)"
+				# second server silently overwrote the first. The path is part of the
+				# key for the same reason find_srv uses it — see above.
+				id="srv$(printf '%s' "$srv:$port:$path" | md5sum | cut -c1-10)"
 			fi
 			# Carry over the two fields an OPERATOR sets by hand, then wipe the section
 			# and write it fresh. Setting over the old one leaves stale keys behind, and

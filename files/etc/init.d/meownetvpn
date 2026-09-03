@@ -104,7 +104,7 @@ tunnel_servers() {
 # deliberately addressed by IP.
 write_xray_conf_f() {  # file socks server_section
 	local f="$1" socks="$2" s="$3"
-	local addr port uuid sni host path net sec flow fp xmode alpn insec lvl stream tls xex
+	local addr port uuid sni host path net sec flow fp xmode alpn insec lvl stream tls xex dial
 	addr=$(srv_get "$s" address); port=$(srv_get "$s" port)
 	uuid=$(srv_get "$s" uuid); [ -n "$uuid" ] || uuid=$(srv_get "$s" username)
 	sni=$(srv_get "$s" sni);   [ -n "$sni" ]  || sni="$addr"
@@ -141,6 +141,15 @@ write_xray_conf_f() {  # file socks server_section
 		tls=""
 	fi
 
+	# Dial the IP, not the name. Xray resolves an outbound address through the
+	# SYSTEM resolver, and settings.routed_dns sends DNS into the tunnel on purpose —
+	# so a hostname here means Xray waits on a lookup that only the tunnel it has not
+	# built yet could answer. It fails as "connection reset" through the SOCKS port,
+	# with a config that is otherwise correct and a bypass rule already in place, so
+	# nothing in the logs points at DNS. serverName and the Host header keep the
+	# name, which is all TLS and the HTTP layer care about.
+	dial=$(srv_ips "$addr" | head -1)
+	[ -n "$dial" ] || dial="$addr"
 	mkdir -p "$RUN_DIR"
 	{
 	echo '{'
@@ -154,7 +163,7 @@ write_xray_conf_f() {  # file socks server_section
 	echo '  "outbounds": [{'
 	echo '    "tag": "proxy", "protocol": "vless",'
 	echo '    "settings": { "vnext": [{'
-	echo "      \"address\": \"$addr\", \"port\": $port,"
+	echo "      \"address\": \"$dial\", \"port\": $port,"
 	printf '      "users": [{ "id": "%s", "encryption": "none"' "$uuid"
 	[ -n "$flow" ] && printf ', "flow": "%s"' "$flow"
 	echo ' }]'
@@ -208,6 +217,27 @@ misc:
 EOF
 }
 
+# Resolve a server address to IPv4, remembering what we got. Both callers need it
+# for the same reason and neither can afford a lookup that fails: settings.routed_dns
+# deliberately sends DNS INTO the tunnel, so on a cold start the resolver is only
+# reachable through the very tunnel being built. The cache is what breaks that
+# circle — the same deadlock that pinned NTP to IP literals.
+srv_ips() {  # $1 = address -> zero or more IPv4 addresses
+	local a="$1" cache="$RUN_DIR/server-ips" got one
+	[ -n "$a" ] || return 0
+	if ip4_ok "$a"; then echo "$a"; return 0; fi
+	mkdir -p "$RUN_DIR"
+	got=$(nslookup "$a" 2>/dev/null | awk '/^Address( [0-9]*)?:/{print $NF}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+	if [ -n "$got" ]; then
+		grep -v "^$a	" "$cache" > "$cache.new" 2>/dev/null
+		for one in $got; do ip4_ok "$one" && echo "$a	$one" >> "$cache.new"; done
+		mv "$cache.new" "$cache" 2>/dev/null
+		for one in $got; do ip4_ok "$one" && echo "$one"; done
+		return 0
+	fi
+	awk -v h="$a" '$1==h{print $2}' "$cache" 2>/dev/null
+}
+
 # Strict dotted-quad test, used for the server-IP bypass below. Only a real IPv4
 # literal may be pasted into an nft rule: nft rejects a half-typed "10.0.0."
 # outright and tries to RESOLVE "300.1.1.1" while loading the file — either way
@@ -228,7 +258,7 @@ ip4_ok() {
 
 # ── nftables: one table, a set + marking rule per tunnel ─────────────────────
 setup_nft_all() {
-	local sets="" pre="" out="" fwd="" post="" defrule="" tunset="" srvips="" line idx kind g tun mark setname a s rs rc err cache one
+	local sets="" pre="" out="" fwd="" post="" defrule="" tunset="" srvips="" line idx kind g tun mark setname a s rs rc err one
 	sets="	set meownetvpn_direct { type ipv4_addr; flags interval; auto-merge; }"
 	for line in $(tunnels); do
 		idx=${line%%|*}; kind=$(echo "$line" | cut -d'|' -f2); g=$(echo "$line" | cut -d'|' -f3)
@@ -284,31 +314,10 @@ setup_nft_all() {
 	# the tunnel, so on a cold start (tunnel not up yet) resolution can fail exactly
 	# when the bypass matters most. The cache is what breaks that circle — same
 	# shape of deadlock as NTP-by-hostname, which is why NTP is pinned to IPs.
-	local cache="$RUN_DIR/server-ips"
-	mkdir -p "$RUN_DIR"
 	for s in $(server_list); do
-		a=$(srv_get "$s" address)
-		[ -n "$a" ] || continue
-		if ip4_ok "$a"; then
-			srvips="$srvips$a, "
-			continue
-		fi
-		rc=$(nslookup "$a" 2>/dev/null | awk '/^Address( [0-9]*)?:/{print $NF}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
-		if [ -n "$rc" ]; then
-			# refresh this host's cache line
-			grep -v "^$a	" "$cache" > "$cache.new" 2>/dev/null
-			for one in $rc; do
-				ip4_ok "$one" || continue
-				echo "$a	$one" >> "$cache.new"
-				srvips="$srvips$one, "
-			done
-			mv "$cache.new" "$cache" 2>/dev/null
-		else
-			for one in $(awk -v h="$a" '$1==h{print $2}' "$cache" 2>/dev/null); do
-				ip4_ok "$one" && srvips="$srvips$one, "
-			done
-			log "server $a did not resolve — using cached address(es) for the bypass"
-		fi
+		for one in $(srv_ips "$(srv_get "$s" address)"); do
+			srvips="$srvips$one, "
+		done
 	done
 	[ -n "$srvips" ] && srvips="		ip daddr { ${srvips%, } } return"
 	# Never mark anything heading back to the LAN. The fwmark ip rules point at
