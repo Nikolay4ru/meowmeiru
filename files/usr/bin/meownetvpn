@@ -1062,7 +1062,7 @@ case "$1" in
 		# overlay, so there is deliberately no such fallback: a missing mirror is an
 		# error you can act on, a full flash is not.
 		base=$(uci -q get $CONF.settings.xray_mirror)
-		[ -n "$base" ] || base="https://meownetvpn.app/updates/xray"
+		[ -n "$base" ] || base="https://meownet.app/updates/xray"
 		arch=$(uname -m)
 		case "$arch" in
 			aarch64|arm64) a=arm64 ;;
