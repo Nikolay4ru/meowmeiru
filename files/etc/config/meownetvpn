@@ -1,4 +1,4 @@
-config mierukop 'settings'
+config meownetvpn 'settings'
 	option enabled '1'
 	# which `config server` section is currently live
 	option active_server 'main'
@@ -14,7 +14,7 @@ config mierukop 'settings'
 	# local socks5 that mieru exposes
 	option socks_port '1180'
 	# mieru multiplexing level: MULTIPLEXING_OFF|LOW|MIDDLE|HIGH (provider-dependent;
-	# meownet subscriptions use LOW). All servers sharing one login fail over natively.
+	# meownetvpn subscriptions use LOW). All servers sharing one login fail over natively.
 	option multiplexing 'MULTIPLEXING_MIDDLE'
 	# tun device + routing table/mark
 	option tun_name 'mtun0'
@@ -34,8 +34,8 @@ config mierukop 'settings'
 	# real DNS used to resolve routed domains (reached THROUGH the tunnel)
 	option routed_dns '8.8.8.8'
 	# community lists from itdoginfo/allow-domains (space-separated). Run:
-	#   mierukop lists          — show all available
-	#   mierukop list add NAME  — enable one
+	#   meownetvpn lists          — show all available
+	#   meownetvpn list add NAME  — enable one
 	# subnet+domain: telegram meta twitter discord roblox
 	# subnet only:   cloudflare hetzner digitalocean
 	# domain only:   youtube tiktok google_ai google_play hdrezka
@@ -43,7 +43,7 @@ config mierukop 'settings'
 	option community_lists 'telegram youtube discord meta twitter'
 
 # mieru servers. Add more sections for auto-failover; `active_server` above picks
-# the live one. Configure via:  mierukop server add <label> <ip> <port> <user> <pass>
+# the live one. Configure via:  meownetvpn server add <label> <ip> <port> <user> <pass>
 config server 'main'
 	option label 'Server 1'
 	option address '0.0.0.0'
@@ -54,7 +54,7 @@ config server 'main'
 
 # Routing groups: send specific lists through a SPECIFIC server via their own tunnel
 # (separate mtunN/fwmark/table/set). Everything not in a group uses the default
-# tunnel above. Manage via:  mierukop group add <name> <server-section> <lists...>
+# tunnel above. Manage via:  meownetvpn group add <name> <server-section> <lists...>
 #config group 'gYouTube'
 #	option enabled '1'
 #	option label 'YouTube via DE'

@@ -1,5 +1,5 @@
 #!/bin/sh /etc/rc.common
-# mierukop — policy routing over mieru SOCKS5 transports (podkop-style, for mieru)
+# meownetvpn — policy routing over mieru SOCKS5 transports (podkop-style, for mieru)
 # Default tunnel routes most lists; optional `config group` sections route specific
 # lists through specific server(s) via their own tunnel (mtunN/fwmark/table/nft set).
 
@@ -7,14 +7,21 @@ START=90
 STOP=10
 USE_PROCD=1
 
-CONF="mierukop"
-NFT_TABLE="inet mierukop"
-NFT_SET="mierukop_subnets"
-RUN_DIR="/var/run/mierukop"
+CONF="meownetvpn"
+NFT_TABLE="inet meownetvpn"
+NFT_SET="meownetvpn_subnets"
+RUN_DIR="/var/run/meownetvpn"
 
-log() { logger -t mierukop "$1"; }
+log() { logger -t meownetvpn "$1"; }
 uci_get() { uci -q get "$CONF.settings.$1"; }
 srv_get() { uci -q get "$CONF.$1.$2"; }
+# Transport engine backing a server section. Absent means mieru: every section
+# written before VLESS support existed has no `type`, and defaulting to vless
+# would silently reinterpret a live fleet's servers as something they are not.
+srv_type() {
+	local t; t=$(uci -q get "$CONF.$1.type")
+	case "$t" in vless) echo vless ;; *) echo mieru ;; esac
+}
 grp_get() { uci -q get "$CONF.$1.$2"; }
 
 server_list() { uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=server$/\1/p"; }
@@ -62,7 +69,7 @@ t_mark()  { printf '0x%x' $(( 0x1042 + $1 )); }
 t_table() { echo $(( 1042 + $1 )); }
 t_rpc()   { echo $(( 8965 + $1 )); }
 t_addr()  { echo "198.18.$1.1"; }
-t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "mierukop_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
+t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "meownetvpn_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
 
 # Servers (sections) backing a tunnel. Default = the active server only.
 # Group = exactly the server(s) it lists (specific routing).
@@ -132,6 +139,80 @@ EOF
 	chmod 600 "$f" 2>/dev/null
 }
 
+# One VLESS outbound behind a local SOCKS5 inbound — the same contract mieru
+# offers, so hev and the whole routing plane below are untouched by which engine
+# is running. Only the tunnel's PRIMARY server is used: Xray can carry several
+# outbounds behind a balancer, but failover here is already the watchdog's job
+# (it moves settings.active_server), and two mechanisms racing to pick an exit is
+# how a router ends up on a country nobody chose.
+#
+# sniffing stays OFF. It exists to recover a destination domain for Xray's own
+# routing rules, and this module has none — nftables decided what enters the
+# tunnel long before Xray sees the packet. Leaving it on only costs a parse of
+# every first payload and can rewrite the destination of a connection that was
+# deliberately addressed by IP.
+write_xray_conf_f() {  # file socks server_section
+	local f="$1" socks="$2" s="$3"
+	local addr port uuid sni host path net sec flow fp xmode alpn insec lvl stream tls
+	addr=$(srv_get "$s" address); port=$(srv_get "$s" port)
+	uuid=$(srv_get "$s" uuid); [ -n "$uuid" ] || uuid=$(srv_get "$s" username)
+	sni=$(srv_get "$s" sni);   [ -n "$sni" ]  || sni="$addr"
+	host=$(srv_get "$s" host); [ -n "$host" ] || host="$sni"
+	path=$(srv_get "$s" path); [ -n "$path" ] || path="/"
+	net=$(srv_get "$s" network);   [ -n "$net" ]  || net=xhttp
+	sec=$(srv_get "$s" security);  [ -n "$sec" ]  || sec=tls
+	flow=$(srv_get "$s" flow)
+	fp=$(srv_get "$s" fingerprint); [ -n "$fp" ] || fp=chrome
+	xmode=$(srv_get "$s" xmode);    [ -n "$xmode" ] || xmode=auto
+	alpn=$(srv_get "$s" alpn)
+	insec=$(srv_get "$s" insecure); [ "$insec" = "1" ] && insec=true || insec=false
+	lvl=$(uci_get xray_loglevel)
+	case "$lvl" in debug|info|warning|error|none) ;; *) lvl=warning ;; esac
+
+	case "$net" in
+		xhttp) stream="\"xhttpSettings\": { \"path\": \"$path\", \"host\": \"$host\", \"mode\": \"$xmode\" }" ;;
+		ws)    stream="\"wsSettings\": { \"path\": \"$path\", \"headers\": { \"Host\": \"$host\" } }" ;;
+		grpc)  stream="\"grpcSettings\": { \"serviceName\": \"${path#/}\" }" ;;
+		httpupgrade) stream="\"httpupgradeSettings\": { \"path\": \"$path\", \"host\": \"$host\" }" ;;
+		*)     stream="" ;;
+	esac
+	if [ "$sec" = tls ]; then
+		tls="\"tlsSettings\": { \"serverName\": \"$sni\", \"fingerprint\": \"$fp\", \"allowInsecure\": $insec"
+		[ -n "$alpn" ] && tls="$tls, \"alpn\": [ \"$(printf '%s' "$alpn" | sed 's/,/", "/g')\" ]"
+		tls="$tls }"
+	else
+		tls=""
+	fi
+
+	mkdir -p "$RUN_DIR"
+	{
+	echo '{'
+	echo "  \"log\": { \"loglevel\": \"$lvl\" },"
+	echo '  "inbounds": [{'
+	echo '    "tag": "socks-in", "protocol": "socks", "listen": "127.0.0.1",'
+	echo "    \"port\": $socks,"
+	echo '    "settings": { "auth": "noauth", "udp": true },'
+	echo '    "sniffing": { "enabled": false }'
+	echo '  }],'
+	echo '  "outbounds": [{'
+	echo '    "tag": "proxy", "protocol": "vless",'
+	echo '    "settings": { "vnext": [{'
+	echo "      \"address\": \"$addr\", \"port\": $port,"
+	printf '      "users": [{ "id": "%s", "encryption": "none"' "$uuid"
+	[ -n "$flow" ] && printf ', "flow": "%s"' "$flow"
+	echo ' }]'
+	echo '    }] },'
+	printf '    "streamSettings": { "network": "%s", "security": "%s"' "$net" "$sec"
+	[ -n "$tls" ] && printf ', %s' "$tls"
+	[ -n "$stream" ] && printf ', %s' "$stream"
+	echo ''
+	echo '    }'
+	echo '  }]'
+	echo '}'
+	} > "$f"
+	chmod 600 "$f" 2>/dev/null
+}
+
 write_hev_conf_f() {  # hev_file up_file tun addr socks mark table
 	local hev="$1" up="$2" tun="$3" addr="$4" socks="$5" mark="$6" table="$7"
 	cat > "$up" <<EOF
@@ -152,7 +233,7 @@ ip rule del fwmark $mark lookup $table 2>/dev/null
 ip rule add fwmark $mark lookup $table
 sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1
 sysctl -w net.ipv4.conf.\$TUN.rp_filter=2 >/dev/null 2>&1
-logger -t mierukop "tun \$TUN up (table $table mark $mark)"
+logger -t meownetvpn "tun \$TUN up (table $table mark $mark)"
 EOF
 	chmod +x "$up"
 	cat > "$hev" <<EOF
@@ -190,8 +271,8 @@ ip4_ok() {
 
 # ── nftables: one table, a set + marking rule per tunnel ─────────────────────
 setup_nft_all() {
-	local sets="" pre="" out="" fwd="" post="" defrule="" tunset="" srvips="" line idx kind g tun mark setname a s rs rc err
-	sets="	set mierukop_direct { type ipv4_addr; flags interval; auto-merge; }"
+	local sets="" pre="" out="" fwd="" post="" defrule="" tunset="" srvips="" line idx kind g tun mark setname a s rs rc err cache one
+	sets="	set meownetvpn_direct { type ipv4_addr; flags interval; auto-merge; }"
 	for line in $(tunnels); do
 		idx=${line%%|*}; kind=$(echo "$line" | cut -d'|' -f2); g=$(echo "$line" | cut -d'|' -f3)
 		tun=$(t_tun "$idx"); mark=$(t_mark "$idx"); setname=$(t_set "$idx" "$kind" "$g")
@@ -239,10 +320,38 @@ setup_nft_all() {
 	# server address (hosting-provider ranges do), the packet is routed into the
 	# very tunnel it is supposed to build: hev hands it back to mieru on 127.0.0.1,
 	# which dials the server again — the tunnel deadlocks until the list is removed.
+	# A VLESS endpoint is normally a HOSTNAME, and a hostname cannot go into an nft
+	# rule — so without resolving it here the bypass simply would not cover the very
+	# server the tunnel is built on. Resolve it, and cache what we resolved: the
+	# lookup itself needs DNS, and settings.routed_dns deliberately sends DNS INTO
+	# the tunnel, so on a cold start (tunnel not up yet) resolution can fail exactly
+	# when the bypass matters most. The cache is what breaks that circle — same
+	# shape of deadlock as NTP-by-hostname, which is why NTP is pinned to IPs.
+	local cache="$RUN_DIR/server-ips"
+	mkdir -p "$RUN_DIR"
 	for s in $(server_list); do
 		a=$(srv_get "$s" address)
-		ip4_ok "$a" || continue
-		srvips="$srvips$a, "
+		[ -n "$a" ] || continue
+		if ip4_ok "$a"; then
+			srvips="$srvips$a, "
+			continue
+		fi
+		rc=$(nslookup "$a" 2>/dev/null | awk '/^Address( [0-9]*)?:/{print $NF}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+		if [ -n "$rc" ]; then
+			# refresh this host's cache line
+			grep -v "^$a	" "$cache" > "$cache.new" 2>/dev/null
+			for one in $rc; do
+				ip4_ok "$one" || continue
+				echo "$a	$one" >> "$cache.new"
+				srvips="$srvips$one, "
+			done
+			mv "$cache.new" "$cache" 2>/dev/null
+		else
+			for one in $(awk -v h="$a" '$1==h{print $2}' "$cache" 2>/dev/null); do
+				ip4_ok "$one" && srvips="$srvips$one, "
+			done
+			log "server $a did not resolve — using cached address(es) for the bypass"
+		fi
 	done
 	[ -n "$srvips" ] && srvips="		ip daddr { ${srvips%, } } return"
 	# Never mark anything heading back to the LAN. The fwmark ip rules point at
@@ -280,7 +389,7 @@ table $NFT_TABLE {
 $srvips
 		meta l4proto { icmp, ipv6-icmp } return
 		ct mark != 0 meta mark set ct mark return
-		ip daddr @mierukop_direct return
+		ip daddr @meownetvpn_direct return
 $pre
 $defrule
 	}
@@ -289,7 +398,7 @@ $defrule
 $srvips
 		meta l4proto { icmp, ipv6-icmp } return
 		ct mark != 0 meta mark set ct mark return
-		ip daddr @mierukop_direct return
+		ip daddr @meownetvpn_direct return
 $out
 $defrule
 	}
@@ -386,30 +495,30 @@ sync_fw_zone() {
 setup_cron() {
 	local cron="/etc/crontabs/root" iv
 	touch "$cron"
-	sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d;/mierukop auto-best/d;/mierukop sub-refresh/d' "$cron"
-	[ "$(uci_get watchdog)" = "1" ] && echo "*/5 * * * * /etc/mierukop/watchdog.sh" >> "$cron"
-	echo "* * * * * /usr/bin/mierukop sample" >> "$cron"
+	sed -i '/meownetvpn\/\(watchdog\|update-lists\)\.sh/d;/meownetvpn sample/d;/meownetvpn pingall/d;/meownetvpn update-auto/d;/meownetvpn auto-best/d;/meownetvpn sub-refresh/d' "$cron"
+	[ "$(uci_get watchdog)" = "1" ] && echo "*/5 * * * * /etc/meownetvpn/watchdog.sh" >> "$cron"
+	echo "* * * * * /usr/bin/meownetvpn sample" >> "$cron"
 	# feature-gated entries only when the feature is on — an entry that execs the
 	# CLI just to exit 0 still costs crond->sh->uci forks every interval
 	if [ "$(uci_get auto_best)" = "1" ]; then
-		echo "*/10 * * * * /usr/bin/mierukop pingall >/dev/null 2>&1" >> "$cron"
-		echo "*/15 * * * * /usr/bin/mierukop auto-best >/dev/null 2>&1" >> "$cron"
+		echo "*/10 * * * * /usr/bin/meownetvpn pingall >/dev/null 2>&1" >> "$cron"
+		echo "*/15 * * * * /usr/bin/meownetvpn auto-best >/dev/null 2>&1" >> "$cron"
 	else
-		echo "*/30 * * * * /usr/bin/mierukop pingall >/dev/null 2>&1" >> "$cron"
+		echo "*/30 * * * * /usr/bin/meownetvpn pingall >/dev/null 2>&1" >> "$cron"
 	fi
 	[ "$(uci_get sub_auto)" = "1" ] && \
-		echo "41 4 * * * /usr/bin/mierukop sub-refresh >/dev/null 2>&1" >> "$cron"
+		echo "41 4 * * * /usr/bin/meownetvpn sub-refresh >/dev/null 2>&1" >> "$cron"
 	[ "$(uci_get auto_update)" = "1" ] && \
-		echo "17 4 * * 6 /usr/bin/mierukop update-auto >/dev/null 2>&1" >> "$cron"
+		echo "17 4 * * 6 /usr/bin/meownetvpn update-auto >/dev/null 2>&1" >> "$cron"
 	iv=$(uci_get update_interval)
-	[ -n "$iv" ] && [ "$iv" != "0" ] && echo "23 5 */$(( iv/24>0 ? iv/24 : 1 )) * * /etc/mierukop/update-lists.sh download" >> "$cron"
+	[ -n "$iv" ] && [ "$iv" != "0" ] && echo "23 5 */$(( iv/24>0 ? iv/24 : 1 )) * * /etc/meownetvpn/update-lists.sh download" >> "$cron"
 	/etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1
 }
 
 # bring up one tunnel's mieru + hev procd instances (called inside start_service)
 bring_up_tunnel() {
 	local idx="$1" kind="$2" g="$3"
-	local tun socks mark table rpc addr conf hev up home prof mi ti user pass sj first
+	local tun socks mark table rpc addr conf xconf hev up home prof mi xi ti user pass sj first eng mset ms
 	tun=$(t_tun "$idx"); socks=$(t_socks "$idx"); mark=$(t_mark "$idx")
 	table=$(t_table "$idx"); rpc=$(t_rpc "$idx"); addr=$(t_addr "$idx")
 	# Arm the killswitch before anything can be marked, and before the bail-outs
@@ -424,50 +533,87 @@ bring_up_tunnel() {
 		ip rule add fwmark "$mark" lookup "$table" 2>/dev/null
 	fi
 	if [ "$kind" = default ]; then
-		conf="$RUN_DIR/mieru.json"; hev="$RUN_DIR/hev.yml"; up="$RUN_DIR/up0.sh"
-		home=/root; prof=mierukop; mi=mieru; ti=tun2socks
+		conf="$RUN_DIR/mieru.json"; xconf="$RUN_DIR/xray.json"
+		hev="$RUN_DIR/hev.yml"; up="$RUN_DIR/up0.sh"
+		home=/root; prof=meownetvpn; mi=mieru; xi=xray; ti=tun2socks
 	else
-		conf="$RUN_DIR/mieru-$g.json"; hev="$RUN_DIR/hev-$g.yml"; up="$RUN_DIR/up-$g.sh"
-		home="$RUN_DIR/h$idx"; prof="mk_$g"; mi="mieru-$g"; ti="tun2socks-$g"; mkdir -p "$home"
+		conf="$RUN_DIR/mieru-$g.json"; xconf="$RUN_DIR/xray-$g.json"
+		hev="$RUN_DIR/hev-$g.yml"; up="$RUN_DIR/up-$g.sh"
+		home="$RUN_DIR/h$idx"; prof="mn_$g"; mi="mieru-$g"; xi="xray-$g"; ti="tun2socks-$g"; mkdir -p "$home"
 	fi
 	first=$(tunnel_servers "$kind" "$g" | head -1)
 	[ -n "$first" ] || { log "tunnel $idx ($kind $g): no servers, skip"; return 1; }
-	user=$(srv_get "$first" username); pass=$(srv_get "$first" password)
-	sj=$(_servers_json $(tunnel_servers "$kind" "$g"))
-	# tunnel_servers only proves the sections exist; _servers_json additionally drops
-	# any that lost their address or port. An empty list still produces a perfectly
-	# valid-looking profile with zero servers — mieru refuses it, but hev is started
-	# unconditionally right below, brings the tun up and installs the route, so the
-	# group's traffic disappears into a dead SOCKS port while syslog says "tunnel up".
-	[ -n "$sj" ] || { log "tunnel $idx ($kind $g): no usable servers, skip"; return 1; }
-	write_mieru_conf_f "$conf" "$prof" "$rpc" "$socks" "$user" "$pass" "$sj"
+	eng=$(srv_type "$first")
+
+	# hev is identical either way: it only ever talks to a SOCKS5 port on
+	# 127.0.0.1, and which daemon answers there is exactly what this branch picks.
 	write_hev_conf_f "$hev" "$up" "$tun" "$addr" "$socks" "$mark" "$table"
-	HOME="$home" /usr/bin/mieru apply config "$conf" >/dev/null 2>&1
 	# group tunnels carry far fewer sessions than default — a lower Go memory
 	# ceiling keeps 3 instances from claiming 144MiB of a 256MiB router
 	local gml=48MiB; [ "$kind" = default ] || gml=32MiB
-	procd_open_instance "$mi"
-	procd_set_param command /usr/bin/mieru run
-	procd_set_param env HOME="$home" GOGC=20 GOMEMLIMIT=$gml
-	procd_set_param respawn 3600 5 0
-	procd_close_instance
+
+	if [ "$eng" = vless ]; then
+		[ -x /usr/bin/xray ] || { log "tunnel $idx ($kind $g): server $first is vless but /usr/bin/xray is missing, skip"; return 1; }
+		[ -n "$(srv_get "$first" address)" ] && [ -n "$(srv_get "$first" port)" ] || {
+			log "tunnel $idx ($kind $g): vless server $first has no address/port, skip"; return 1; }
+		# A VLESS section with no credential produces a config Xray still ACCEPTS —
+		# it dials, the handshake is rejected, and the tunnel looks up while carrying
+		# nothing. Refuse here instead, the same way the mieru path refuses an empty
+		# server list below.
+		[ -n "$(srv_get "$first" uuid)" ] || [ -n "$(srv_get "$first" username)" ] || {
+			log "tunnel $idx ($kind $g): vless server $first has no uuid, skip"; return 1; }
+		write_xray_conf_f "$xconf" "$socks" "$first"
+		if ! /usr/bin/xray run -test -c "$xconf" >/dev/null 2>&1; then
+			log "tunnel $idx ($kind $g): xray rejected the generated config, skip"
+			return 1
+		fi
+		procd_open_instance "$xi"
+		procd_set_param command /usr/bin/xray run -c "$xconf"
+		procd_set_param env GOGC=20 GOMEMLIMIT=$gml XRAY_LOCATION_ASSET="$RUN_DIR"
+		procd_set_param respawn 3600 5 0
+		procd_close_instance
+	else
+		user=$(srv_get "$first" username); pass=$(srv_get "$first" password)
+		# mieru pools every server of this tunnel natively; a vless section mixed into
+		# the same group has no ipAddress/portBindings shape and would be dropped by
+		# _servers_json anyway, so filter explicitly rather than by accident.
+		mset=""
+		for ms in $(tunnel_servers "$kind" "$g"); do
+			[ "$(srv_type "$ms")" = mieru ] && mset="$mset $ms"
+		done
+		sj=$(_servers_json $mset)
+		# tunnel_servers only proves the sections exist; _servers_json additionally drops
+		# any that lost their address or port. An empty list still produces a perfectly
+		# valid-looking profile with zero servers — mieru refuses it, but hev is started
+		# unconditionally right below, brings the tun up and installs the route, so the
+		# group's traffic disappears into a dead SOCKS port while syslog says "tunnel up".
+		[ -n "$sj" ] || { log "tunnel $idx ($kind $g): no usable servers, skip"; return 1; }
+		write_mieru_conf_f "$conf" "$prof" "$rpc" "$socks" "$user" "$pass" "$sj"
+		HOME="$home" /usr/bin/mieru apply config "$conf" >/dev/null 2>&1
+		procd_open_instance "$mi"
+		procd_set_param command /usr/bin/mieru run
+		procd_set_param env HOME="$home" GOGC=20 GOMEMLIMIT=$gml
+		procd_set_param respawn 3600 5 0
+		procd_close_instance
+	fi
+
 	procd_open_instance "$ti"
 	procd_set_param command /usr/bin/hev-socks5-tunnel "$hev"
 	procd_set_param respawn 3600 5 0
 	procd_close_instance
-	log "tunnel up: idx=$idx kind=$kind ${g:+grp=$g }tun=$tun socks=$socks mark=$mark"
+	log "tunnel up: idx=$idx kind=$kind ${g:+grp=$g }engine=$eng tun=$tun socks=$socks mark=$mark"
 }
 
 start_service() {
 	[ "$(uci_get enabled)" = "1" ] || { log "disabled in config"; return 0; }
-	# mesh role awareness (meownet fleet): a NODE routes its internet through the
+	# mesh role awareness (meownetvpn fleet): a NODE routes its internet through the
 	# main router's tunnel over the batman mesh, so it must NOT run its own
 	# mieru/hev. No /etc/meownet-role file (non-meownet router) → run normally.
 	if [ "$(cat /etc/meownet-role 2>/dev/null)" = "node" ]; then
-		log "meownet role=node — skipping tunnel (main router provides the bypass)"
+		log "meownetvpn role=node — skipping tunnel (main router provides the bypass)"
 		return 0
 	fi
-	chmod 600 /etc/config/mierukop 2>/dev/null
+	chmod 600 /etc/config/meownetvpn 2>/dev/null
 	local line idx kind g devs=""
 	# Refuse to run without a ruleset: the tunnels would come up, syslog and LuCI
 	# would report healthy, and every packet would still leave through the WAN
@@ -485,7 +631,7 @@ start_service() {
 	setup_cron
 	# health checks use this to stay quiet during the first seconds, when the
 	# sets are legitimately still empty
-	mkdir -p /tmp/mierukop && date +%s > /tmp/mierukop/started
+	mkdir -p /tmp/meownetvpn && date +%s > /tmp/meownetvpn/started
 	# No `sleep 6` in front of the apply any more. An empty set marks nothing, so
 	# every second between the ruleset going in and the sets being filled is a
 	# second in which everything the user believes is protected egresses in the
@@ -493,7 +639,7 @@ start_service() {
 	# rebuild), and on a cold start the only thing that shortens it is applying at
 	# once. It stays backgrounded because holding start_service open does not hold
 	# any packet back — it would only stall boot behind apply's lock.
-	( /etc/mierukop/update-lists.sh apply; log "started: $(tunnels | wc -l) tunnel(s)" ) &
+	( /etc/meownetvpn/update-lists.sh apply; log "started: $(tunnels | wc -l) tunnel(s)" ) &
 }
 
 stop_service() {
@@ -504,7 +650,7 @@ stop_service() {
 	# to tear down like a real stop, otherwise the marking rules outlive the tunnels
 	# and every protected destination is either leaked or (killswitch) blackholed
 	# for good.
-	[ -n "$MK_RELOAD" ] && [ "$(uci_get enabled)" = "1" ] && \
+	[ -n "$MN_RELOAD" ] && [ "$(uci_get enabled)" = "1" ] && \
 		[ "$(cat /etc/meownet-role 2>/dev/null)" != "node" ] && full=0
 	# Tear down what was actually deployed, found by pattern, not what the config
 	# says now: procd commits the uci change before it fires the reload trigger, so
@@ -544,15 +690,15 @@ stop_service() {
 	# on reload the drop-in is atomically rewritten by apply_all (which restarts
 	# dnsmasq only if content changed) — removing it here would force a restart
 	if [ "$full" = 1 ]; then
-		rm -f /tmp/dnsmasq.d/mierukop*.conf /tmp/dnsmasq.*.d/mierukop*.conf 2>/dev/null
-		sed -i '/mierukop\/\(watchdog\|update-lists\)\.sh/d;/mierukop sample/d;/mierukop pingall/d;/mierukop update-auto/d;/mierukop auto-best/d;/mierukop sub-refresh/d' /etc/crontabs/root 2>/dev/null
+		rm -f /tmp/dnsmasq.d/meownetvpn*.conf /tmp/dnsmasq.*.d/meownetvpn*.conf 2>/dev/null
+		sed -i '/meownetvpn\/\(watchdog\|update-lists\)\.sh/d;/meownetvpn sample/d;/meownetvpn pingall/d;/meownetvpn update-auto/d;/meownetvpn auto-best/d;/meownetvpn sub-refresh/d' /etc/crontabs/root 2>/dev/null
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	fi
 	log "stopped"
 }
 
-reload_service() { MK_RELOAD=1; stop; MK_RELOAD=; start; }
-# /etc/rc.common's restart() is a plain stop+start with no MK_RELOAD, and `restart`
+reload_service() { MN_RELOAD=1; stop; MN_RELOAD=; start; }
+# /etc/rc.common's restart() is a plain stop+start with no MN_RELOAD, and `restart`
 # is what every automated recovery path calls — watchdog, auto-best, sub-refresh,
 # the CLI — never `reload`. That took the full-teardown path on each of them: the
 # dnsmasq drop-in was deleted and dnsmasq restarted, then apply rewrote it and
@@ -562,8 +708,8 @@ reload_service() { MK_RELOAD=1; stop; MK_RELOAD=; start; }
 # `stop` followed by `start` is still available for a genuine full teardown.
 restart() {
 	trap '' TERM
-	MK_RELOAD=1; stop "$@"
+	MN_RELOAD=1; stop "$@"
 	trap - TERM
-	MK_RELOAD=; start "$@"
+	MN_RELOAD=; start "$@"
 }
 service_triggers() { procd_add_reload_trigger "$CONF"; }

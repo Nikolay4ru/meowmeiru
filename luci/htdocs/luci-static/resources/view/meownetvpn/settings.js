@@ -1,7 +1,7 @@
 'use strict';
 'require view';
 'require form';
-'require mierukop.lib as lib';
+'require meownetvpn.lib as lib';
 
 return lib.page({
   load: function(){ return this.loadBase(); },
@@ -9,9 +9,9 @@ return lib.page({
   render: function(){
     var self=this, m, s, o;
 
-    m=new form.Map('mierukop','',_('Дополнительные параметры, автоматизация и обновление модуля.'));
+    m=new form.Map('meownetvpn','',_('Дополнительные параметры, автоматизация и обновление модуля.'));
 
-    s=m.section(form.NamedSection,'settings','mierukop',_('Поведение'));
+    s=m.section(form.NamedSection,'settings','meownetvpn',_('Поведение'));
     s.anonymous=true; s.addremove=false;
     o=s.option(form.Flag,'enabled',_('Обход включён'),
       _('Главный выключатель. Выключено — туннели гасятся, правила маршрутизации снимаются, ВЕСЬ трафик идёт напрямую. Состояние переживает перезагрузку.'));
@@ -24,11 +24,11 @@ return lib.page({
     o=s.option(form.Flag,'dns_hijack',_('Принудительный DNS роутера'),
       _('Перенаправлять DNS клиентов на роутер, чтобы доменная маршрутизация работала для всех устройств.'));
 
-    s=m.section(form.NamedSection,'settings','mierukop',_('Автоматизация'));
+    s=m.section(form.NamedSection,'settings','meownetvpn',_('Автоматизация'));
     s.anonymous=true; s.addremove=false;
     o=s.option(form.Flag,'auto_best',_('Авто-выбор лучшего сервера'),
       _('Каждые 15 минут измерять пинг и переключаться на самый быстрый сервер.'));
-    // Without sub_url the nightly `mierukop sub-refresh` exits on its very first
+    // Without sub_url the nightly `meownetvpn sub-refresh` exits on its very first
     // line — no error, no journal entry. The URL was written only by the
     // «Импортировать» button on the Servers page and there was nowhere at all to
     // see it, so the switch below sat ON doing nothing and no one could tell.
@@ -47,7 +47,7 @@ return lib.page({
     o=s.option(form.Value,'update_interval',_('Обновление списков (часы)'));
     o.datatype='uinteger'; o.placeholder='24';
 
-    s=m.section(form.NamedSection,'settings','mierukop',_('Сеть'));
+    s=m.section(form.NamedSection,'settings','meownetvpn',_('Сеть'));
     s.anonymous=true; s.addremove=false;
     o=s.option(form.Value,'socks_port',_('Локальный порт SOCKS5')); o.datatype='port'; o.optional=true;
     o=s.option(form.Value,'tun_name',_('Интерфейс туннеля')); o.optional=true; o.placeholder='mtun0';

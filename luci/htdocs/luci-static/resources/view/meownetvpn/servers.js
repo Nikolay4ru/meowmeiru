@@ -2,7 +2,7 @@
 'require view';
 'require form';
 'require uci';
-'require mierukop.lib as lib';
+'require meownetvpn.lib as lib';
 
 return lib.page({
   load: function(){ return this.loadBase(); },
@@ -10,14 +10,14 @@ return lib.page({
   render: function(){
     var self=this, m, s, o;
 
-    m=new form.Map('mierukop','',_('Активный сервер пропускает весь трафик, не попавший в группу. Добавьте несколько серверов для авто-переключения.'));
+    m=new form.Map('meownetvpn','',_('Активный сервер пропускает весь трафик, не попавший в группу. Добавьте несколько серверов для авто-переключения.'));
 
-    s=m.section(form.NamedSection,'settings','mierukop',_('Подключение'));
+    s=m.section(form.NamedSection,'settings','meownetvpn',_('Подключение'));
     s.anonymous=true; s.addremove=false;
     o=s.option(form.Flag,'enabled',_('Включено')); o.rmempty=false;
     o=s.option(form.ListValue,'active_server',_('Активный сервер'),
       _('Какой сервер пропускает трафик. Учётные данные задаются в таблице «Серверы» ниже.'));
-    uci.sections('mierukop','server').forEach(function(sv){
+    uci.sections('meownetvpn','server').forEach(function(sv){
       o.value(sv['.name'], self.srvLabel(sv['.name'], (sv.label||sv['.name'])));
     });
     o=s.option(form.Flag,'failover',_('Авто-переключение'),
@@ -27,13 +27,48 @@ return lib.page({
       _('Активный выбирается выше. Пинг обновляется кнопкой ниже и раз в 10 минут.'));
     s.addremove=true; s.anonymous=true; s.sortable=false;
     s.option(form.Value,'label',_('Метка'));
+    o=s.option(form.ListValue,'type',_('Протокол'));
+    o.value('mieru','mieru'); o.value('vless','VLESS (Xray)');
+    // Absent means mieru: sections written before VLESS existed carry no `type`,
+    // and defaulting the other way would relabel a live fleet's servers.
+    o.default='mieru';
     s.option(form.Value,'address',_('Адрес')).datatype='host';
     s.option(form.Value,'port',_('Порт')).datatype='port';
     o=s.option(form.DummyValue,'_ping',_('Пинг, мс'));
     o.cfgvalue=function(sid){ var ms=self.pingMap[sid]; return (ms&&ms!=='—')?ms:'—'; };
-    o=s.option(form.Value,'username',_('Пользователь')); o.modalonly=true;
-    o=s.option(form.Value,'password',_('Пароль')); o.password=true; o.modalonly=true;
+
+    // ── mieru ──
+    o=s.option(form.Value,'username',_('Пользователь')); o.modalonly=true; o.depends('type','mieru');
+    o=s.option(form.Value,'password',_('Пароль')); o.password=true; o.modalonly=true; o.depends('type','mieru');
     o=s.option(form.ListValue,'transport',_('Транспорт')); o.value('TCP'); o.value('UDP');
+    o.modalonly=true; o.depends('type','mieru');
+
+    // ── vless ──
+    // depends() on an absent `type` never fires, so these stay hidden for every
+    // pre-existing mieru section without needing a migration of the config itself.
+    o=s.option(form.Value,'uuid',_('UUID')); o.modalonly=true; o.depends('type','vless');
+    o=s.option(form.ListValue,'network',_('Транспорт'));
+    o.value('xhttp','XHTTP'); o.value('ws','WebSocket'); o.value('grpc','gRPC');
+    o.value('httpupgrade','HTTPUpgrade'); o.value('tcp','TCP');
+    o.default='xhttp'; o.modalonly=true; o.depends('type','vless');
+    o=s.option(form.ListValue,'security',_('Шифрование'));
+    o.value('tls','TLS'); o.value('none',_('нет'));
+    o.default='tls'; o.modalonly=true; o.depends('type','vless');
+    o=s.option(form.Value,'sni',_('SNI'));
+    o.placeholder=_('по умолчанию — адрес сервера'); o.modalonly=true; o.depends('type','vless');
+    o=s.option(form.Value,'path',_('Путь'));
+    o.placeholder='/'; o.modalonly=true; o.depends('type','vless');
+    o=s.option(form.Value,'host',_('Заголовок Host'));
+    o.placeholder=_('по умолчанию — SNI'); o.modalonly=true; o.depends('type','vless');
+    o=s.option(form.ListValue,'xmode',_('Режим XHTTP'));
+    o.value('auto','auto'); o.value('packet-up','packet-up');
+    o.value('stream-up','stream-up'); o.value('stream-one','stream-one');
+    o.default='auto'; o.modalonly=true; o.depends({'type':'vless','network':'xhttp'});
+    o=s.option(form.ListValue,'fingerprint',_('Отпечаток TLS'));
+    ['chrome','firefox','safari','ios','android','edge','random'].forEach(function(f){ o.value(f,f); });
+    o.default='chrome'; o.modalonly=true; o.depends({'type':'vless','security':'tls'});
+    o=s.option(form.Value,'flow',_('Flow'));
+    o.placeholder=_('пусто для XHTTP'); o.modalonly=true; o.depends('type','vless');
 
     return m.render().then(function(formNode){
       var out=E('div',{'class':'mk-out'});
@@ -70,9 +105,9 @@ return lib.page({
             if(!url) return Promise.resolve(_('Укажи ссылку на подписку.'));
             // Import rewrites the server list: whatever the subscription no
             // longer offers is deleted together with its username/password.
-            // /etc/config/mierukop is 0600 and is backed up nowhere, and this
+            // /etc/config/meownetvpn is 0600 and is backed up nowhere, and this
             // used to happen on one click with no question asked.
-            var n=(uci.sections('mierukop','server')||[]).length;
+            var n=(uci.sections('meownetvpn','server')||[]).length;
             if(!confirm(_('Импорт заменит список серверов содержимым подписки (сейчас серверов: %d). Серверы, которых нет в подписке, будут удалены. Продолжить?').format(n)))
               return Promise.resolve(_('Отменено.'));
             return self.run(['sub',url]).then(function(r){

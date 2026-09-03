@@ -13,13 +13,13 @@ document.addEventListener('visibilitychange', function(){
 });
 
 /*
- * Shared helpers for the meowMieru (mierukop) multi-page LuCI app.
+ * Shared helpers for the meowMieru (meownetvpn) multi-page LuCI app.
  * Returned as a `baseclass` subclass (so `require` hands back the class, not an
  * auto-instantiated view) with a static `page()` that builds a view carrying all
  * these helpers. Each page does:
- *   'require mierukop.lib as lib';  return lib.page({ load, render });
+ *   'require meownetvpn.lib as lib';  return lib.page({ load, render });
  *
- * HOUSE RULE: every value that comes out of `mierukop` stdout is handed to E()
+ * HOUSE RULE: every value that comes out of `meownetvpn` stdout is handed to E()
  * INSIDE AN ARRAY — E('b',{},[label]), never E('b',{},label). LuCI's dom.append()
  * escapes array children through createTextNode, but a BARE string child is
  * assigned straight to node.innerHTML. Group labels are free text, server labels
@@ -30,7 +30,7 @@ document.addEventListener('visibilitychange', function(){
 
 var RX_COL = 'var(--mk-rx)', TX_COL = 'var(--mk-tx)';
 
-// The only argv the health list's «Исправить» button is allowed to run. `mierukop`
+// The only argv the health list's «Исправить» button is allowed to run. `meownetvpn`
 // emits the fix command as the LAST field of a '|'-separated record, and a group
 // label containing '|' used to shift a different word into that slot — see loadHealth().
 var FIXES = { 'bypass on':1, 'restart':1, 'update':1 };
@@ -128,8 +128,8 @@ var Base = baseclass.extend({
   loadBase: function(){
     var self=this;
     return Promise.all([
-      uci.load('mierukop'),
-      fs.exec('/usr/bin/mierukop',['pingcache']).catch(function(){ return {stdout:''}; })
+      uci.load('meownetvpn'),
+      fs.exec('/usr/bin/meownetvpn',['pingcache']).catch(function(){ return {stdout:''}; })
     ]).then(function(res){
       self.pingMap={};
       ((res[1]&&res[1].stdout)||'').trim().split('\n').forEach(function(l){
@@ -144,7 +144,7 @@ var Base = baseclass.extend({
   // ACL rendered as blank tables with no error anywhere. run() keeps the code for
   // callers that must branch on it; exec() keeps the plain-text contract everything
   // else expects but no longer hides a failure.
-  run: function(args){ return fs.exec('/usr/bin/mierukop', args)
+  run: function(args){ return fs.exec('/usr/bin/meownetvpn', args)
     .then(function(r){ return { code:(r.code|0), out:(r.stdout||'')+(r.stderr||'') }; })
     .catch(function(e){ return { code:-1, out:'[RPC error: '+((e&&e.message)||e)+']' }; }); },
 
@@ -336,7 +336,7 @@ var Base = baseclass.extend({
     });
   },
 
-  // One row per check from `mierukop health`; the worst one drives the header
+  // One row per check from `meownetvpn health`; the worst one drives the header
   // badge. Deliberately per-tunnel — a single global "connected" hid a dead
   // group tunnel for a whole day.
   loadHealth: function(){
@@ -351,7 +351,7 @@ var Base = baseclass.extend({
         // command and the button ran whatever word landed there (`stop` is a real
         // subcommand — it drops all routed traffic). The fix is always the LAST
         // field, the message is everything between; and only the three commands
-        // `mierukop health` can actually ask for are ever executed.
+        // `meownetvpn health` can actually ask for are ever executed.
         var f=l.split('|'), sev=f[2]||'na', wide=(f.length>4);
         var fix=wide?f[f.length-1]:'';
         var txt=f.slice(3, wide?f.length-1:f.length).join('|');

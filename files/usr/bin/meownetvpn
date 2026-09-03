@@ -1,16 +1,16 @@
 #!/bin/sh
-# mierukop CLI — manage the mieru policy-routing module
-CONF="mierukop"
-NFT_TABLE="inet mierukop"
-NFT_SET="mierukop_subnets"
+# meownetvpn CLI — manage the mieru policy-routing module
+CONF="meownetvpn"
+NFT_TABLE="inet meownetvpn"
+NFT_SET="meownetvpn_subnets"
 SOCKS_PORT="$(uci -q get $CONF.settings.socks_port || echo 1180)"
 PROXY="socks5h://127.0.0.1:${SOCKS_PORT}"
 TUN="$(uci -q get $CONF.settings.tun_name || echo mtun0)"
-STATE_DIR="/tmp/mierukop"; [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" 2>/dev/null
+STATE_DIR="/tmp/meownetvpn"; [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" 2>/dev/null
 TRAFFIC_LOG="$STATE_DIR/traffic.csv"
-VER_FILE="/etc/mierukop/VERSION"
+VER_FILE="/etc/meownetvpn/VERSION"
 VERSION=0.0.0; [ -r "$VER_FILE" ] && read -r VERSION < "$VER_FILE"
-REPO_RAW="${MIERUKOP_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main}"
+REPO_RAW="${MEOWNETVPN_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main}"
 # fetch a repo file: try via the tunnel first (raw.githubusercontent is DPI-blocked
 # in RU), then direct as a fallback.
 repo_dl() { curl -fs --proxy "$PROXY" --max-time 60 -o "$2" "$REPO_RAW/$1" 2>/dev/null || curl -fs --max-time 60 -o "$2" "$REPO_RAW/$1" 2>/dev/null; }
@@ -39,14 +39,14 @@ tunnels() {
 t_tun()   { echo "mtun$1"; }
 t_socks() { echo $(( SOCKS_PORT + $1 )); }
 t_mark()  { printf '0x%x' $(( 0x1042 + $1 )); }
-t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "mierukop_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
-dnsmasq_dropin() { ls /tmp/dnsmasq.d/mierukop-domains.conf /tmp/dnsmasq.*.d/mierukop-domains.conf 2>/dev/null | head -1; }
+t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "meownetvpn_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
+dnsmasq_dropin() { ls /tmp/dnsmasq.d/meownetvpn-domains.conf /tmp/dnsmasq.*.d/meownetvpn-domains.conf 2>/dev/null | head -1; }
 
 usage() {
 	cat <<EOF
-mierukop — policy routing over mieru (podkop-style)
+meownetvpn — policy routing over mieru (podkop-style)
 
-Usage: mierukop <command>
+Usage: meownetvpn <command>
   start | stop | restart     manage the service
   bypass on|off|status       master switch: off = everything goes direct
   health                     per-check status (drives the UI traffic light)
@@ -87,7 +87,7 @@ EOF
 }
 
 case "$1" in
-	start|stop|restart) /etc/init.d/mierukop "$1" ;;
+	start|stop|restart) /etc/init.d/meownetvpn "$1" ;;
 	bypass)
 		# master switch: "off" tears the bypass down completely AND survives a
 		# reboot (settings.enabled=0), so nothing on the router is routed through
@@ -95,12 +95,12 @@ case "$1" in
 		case "$2" in
 			off)
 				uci set $CONF.settings.enabled=0; uci commit $CONF
-				/etc/init.d/mierukop stop >/dev/null 2>&1
+				/etc/init.d/meownetvpn stop >/dev/null 2>&1
 				echo "обход ВЫКЛЮЧЕН — весь трафик идёт напрямую (переживёт перезагрузку)"
-				echo "включить обратно: mierukop bypass on" ;;
+				echo "включить обратно: meownetvpn bypass on" ;;
 			on)
 				uci set $CONF.settings.enabled=1; uci commit $CONF
-				/etc/init.d/mierukop start >/dev/null 2>&1
+				/etc/init.d/meownetvpn start >/dev/null 2>&1
 				echo "обход включён" ;;
 			status|"")
 				en=$(uci -q get $CONF.settings.enabled)
@@ -110,8 +110,8 @@ case "$1" in
 				echo "tun_devs: $(ip -br link show 2>/dev/null | grep -c mtun)"
 				echo "processes: $(ps w | grep -cE '[m]ieru run|[h]ev-socks5')"
 				echo "marked_conns: $(grep -c 'mark=41' /proc/net/nf_conntrack 2>/dev/null)"
-				echo "dnsmasq_dropin: $(ls /tmp/dnsmasq.d/mierukop*.conf /tmp/dnsmasq.*.d/mierukop*.conf 2>/dev/null | wc -l)" ;;
-			*) echo "usage: mierukop bypass [on|off|status]"; exit 1 ;;
+				echo "dnsmasq_dropin: $(ls /tmp/dnsmasq.d/meownetvpn*.conf /tmp/dnsmasq.*.d/meownetvpn*.conf 2>/dev/null | wc -l)" ;;
+			*) echo "usage: meownetvpn bypass [on|off|status]"; exit 1 ;;
 		esac ;;
 	health)
 		# One line per check, consumed by the LuCI traffic light:
@@ -167,13 +167,13 @@ case "$1" in
 		done
 		# prefer the run stamp; file mtimes lie because unchanged lists are not rewritten
 		now=$(date +%s); old=-1
-		if [ -r /etc/mierukop/lists/.last-download ]; then
-			read stamp < /etc/mierukop/lists/.last-download
+		if [ -r /etc/meownetvpn/lists/.last-download ]; then
+			read stamp < /etc/meownetvpn/lists/.last-download
 			case "$stamp" in [0-9]*) old=$(( (now - stamp) / 86400 )) ;; esac
 		fi
 		if [ "$old" -lt 0 ]; then
 			old=0
-			for f in /etc/mierukop/lists/*.lst; do
+			for f in /etc/meownetvpn/lists/*.lst; do
 				[ -f "$f" ] || continue
 				m=$(date -r "$f" +%s 2>/dev/null) || m=$now
 				a=$(( (now - m) / 86400 )); [ "$a" -gt "$old" ] && old=$a
@@ -182,11 +182,11 @@ case "$1" in
 		if [ "$old" -gt 14 ]; then emit lists warn "Списки не обновлялись $old дн." "update"
 		else emit lists ok "Списки обновлялись $old дн. назад"; fi
 		# Strikes are PER-TUNNEL since the watchdog stopped restarting the whole
-		# service for one flaky group: /tmp/mierukop.wd/<key>. The single global
-		# /tmp/mierukop.wdfail is deleted by watchdog.sh on every run, so reading
+		# service for one flaky group: /tmp/meownetvpn.wd/<key>. The single global
+		# /tmp/meownetvpn.wdfail is deleted by watchdog.sh on every run, so reading
 		# it here could only ever report "no strikes".
 		wdf=""
-		for f in /tmp/mierukop.wd/*; do
+		for f in /tmp/meownetvpn.wd/*; do
 			[ -s "$f" ] || continue
 			read -r n < "$f"
 			k=${f##*/}
@@ -208,17 +208,17 @@ case "$1" in
 		# match the syslog TAG only — crond lines merely *mention* the word in the
 		# command they run, and would drown the journal in "sample" every minute
 		logread 2>/dev/null \
-		  | grep -E 'mierukop(-wd|-lists)?(\[[0-9]+\])?: |dnsmasq\[[0-9]+\]: nftset' \
+		  | grep -E 'meownetvpn(-wd|-lists)?(\[[0-9]+\])?: |dnsmasq\[[0-9]+\]: nftset' \
 		  | tail -n "${2:-80}" | awk '{
 			ts=$2" "$3" "$4; line=$0
 			sev="info"
 			if (line ~ /failed|error|Error|не запуст|abort|invalid/) sev="bad"
 			else if (line ~ /strike|probe failed|megablock|stale|missing|reapply|failover/) sev="warn"
 			tag="модуль"
-			if (line ~ /mierukop-wd/) tag="сторож"
-			else if (line ~ /mierukop-lists/) tag="списки"
+			if (line ~ /meownetvpn-wd/) tag="сторож"
+			else if (line ~ /meownetvpn-lists/) tag="списки"
 			else if (line ~ /dnsmasq/) tag="dns"
-			sub(/.*mierukop[a-z-]*(\[[0-9]*\])?: /, "", line)
+			sub(/.*meownetvpn[a-z-]*(\[[0-9]*\])?: /, "", line)
 			sub(/.*dnsmasq\[[0-9]*\]: /, "", line)
 			print ts"|"sev"|"tag"|"line }'
 		;;
@@ -230,19 +230,19 @@ case "$1" in
 		echo "прошивка: $(grep -o 'OpenWrt [0-9.]*' /etc/openwrt_release 2>/dev/null | head -1)"
 		echo "аптайм:   $(uptime)"
 		free 2>/dev/null | head -2
-		echo; echo "=== состояние ==="; /usr/bin/mierukop health
-		echo; echo "=== туннели ==="; /usr/bin/mierukop tunnels
+		echo; echo "=== состояние ==="; /usr/bin/meownetvpn health
+		echo; echo "=== туннели ==="; /usr/bin/meownetvpn tunnels
 		echo; echo "=== конфигурация (секреты скрыты) ==="
 		# sub_url belongs in the mask: the subscription URL carries the account
 		# token, so pasting this bundle into a support chat handed over every
 		# server, login and password that the other two names go to the trouble
 		# of hiding — under a header promising the secrets are gone.
 		uci show $CONF 2>/dev/null | sed -E "s/\.(password|username|sub_url)=.*/.\1='***'/"
-		echo; echo "=== события ==="; /usr/bin/mierukop events 60
+		echo; echo "=== события ==="; /usr/bin/meownetvpn events 60
 		;;
 	route-add|route-direct|route-del)
 		act="$1"; raw="$2"; grp="$3"
-		[ -n "$raw" ] || { echo "usage: mierukop $act <домен|ссылка> [группа]"; exit 1; }
+		[ -n "$raw" ] || { echo "usage: meownetvpn $act <домен|ссылка> [группа]"; exit 1; }
 		# accept a pasted URL: strip scheme, credentials, port, path
 		d=$(echo "$raw" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#^[^/@]*@##' -e 's#[/?#].*$##' -e 's#:[0-9]*$##' | tr 'A-Z' 'a-z')
 		case "$d" in
@@ -255,7 +255,7 @@ case "$1" in
 			route-add)
 				if [ -n "$grp" ]; then
 					[ "$(uci -q get $CONF.$grp)" = "group" ] || { echo "нет такой группы: $grp"; exit 1; }
-					key="$CONF.$grp.domain"; setname="mierukop_$grp"
+					key="$CONF.$grp.domain"; setname="meownetvpn_$grp"
 				else
 					key="$CONF.user.domain"
 				fi
@@ -269,7 +269,7 @@ case "$1" in
 					echo "внимание: $d уже ведёт в набор $prev — сработает та директива, а не новая"
 				uci add_list "$key=$d"; uci commit $CONF ;;
 			route-direct)
-				key="$CONF.user.exclude_domain"; setname=mierukop_direct
+				key="$CONF.user.exclude_domain"; setname=meownetvpn_direct
 				uci -q get "$key" | tr ' ' '\n' | grep -qixF "$d" && { echo "$d уже идёт напрямую"; exit 0; }
 				uci add_list "$key=$d"; uci commit $CONF ;;
 			route-del)
@@ -288,7 +288,7 @@ case "$1" in
 		esac
 		# rebuild sets + drop-in WITHOUT touching the tunnels; dnsmasq restarts only
 		# if the drop-in actually changed
-		/etc/mierukop/update-lists.sh apply >/dev/null 2>&1
+		/etc/meownetvpn/update-lists.sh apply >/dev/null 2>&1
 		if [ "$act" != route-del ]; then
 			# Seed the current addresses so the rule bites before the client
 			# re-resolves. The first lookup races the dnsmasq reload we just caused
@@ -318,7 +318,7 @@ case "$1" in
 	status)
 		sv=$(active_server)
 		echo "version: $VERSION"
-		echo "service: $(/etc/init.d/mierukop running >/dev/null 2>&1 && echo running || echo stopped)"
+		echo "service: $(/etc/init.d/meownetvpn running >/dev/null 2>&1 && echo running || echo stopped)"
 		echo "mieru:   $(pgrep -f '/usr/bin/mieru' >/dev/null && echo up || echo down)"
 		echo "tun2socks: $(pgrep -f hev-socks5-tunnel >/dev/null && echo up || echo down)"
 		echo "tun dev: $(ip -br addr show "$TUN" 2>/dev/null || echo absent)"
@@ -341,7 +341,7 @@ case "$1" in
 		if [ "$pt" -gt 0 ] && [ "$rx" -ge "$prx" ]; then rrate=$(((rx-prx)/dt)); trate=$(((tx-ptx)/dt)); fi
 		sv=$(active_server)
 		svc=stopped
-		ubus -S call service list '{"name":"mierukop"}' 2>/dev/null | grep -q '"running":true' && svc=running
+		ubus -S call service list '{"name":"meownetvpn"}' 2>/dev/null | grep -q '"running":true' && svc=running
 		cnt=—; [ -r "$STATE_DIR/subnets.count" ] && read -r cnt < "$STATE_DIR/subnets.count"
 		echo "version: $VERSION"
 		echo "service: $svc"
@@ -433,13 +433,13 @@ case "$1" in
 		# looped: the watchdog rotates away from a server whose mieru port is
 		# blocked, and 15 min later the lowest ICMP time drags the tunnel right
 		# back onto it — the bypass dead most of every quarter hour.
-		WD_DIR=/tmp/mierukop.wd                # per-tunnel strike files (watchdog.sh)
+		WD_DIR=/tmp/meownetvpn.wd                # per-tunnel strike files (watchdog.sh)
 		SEEN="$STATE_DIR/best.active"          # active_server as WE last left it
 		BLACK="$STATE_DIR/best.blacklist"      # <section> <until-epoch>
 		HYST_MS=25                             # ICMP jitter here is ~3 ms
 		BLACK_TTL=3600
 		now=$(date +%s)
-		[ -s "$STATE_DIR/ping.cache" ] || /usr/bin/mierukop pingall >/dev/null 2>&1
+		[ -s "$STATE_DIR/ping.cache" ] || /usr/bin/meownetvpn pingall >/dev/null 2>&1
 		cur=$(active_server)
 		# The watchdog is the authority on "does this tunnel pass traffic": while
 		# it holds a strike on the default tunnel it is bouncing mieru and may
@@ -452,7 +452,7 @@ case "$1" in
 		prev=""; [ -r "$SEEN" ] && read -r prev < "$SEEN"
 		if [ -n "$prev" ] && [ "$prev" != "$cur" ]; then
 			echo "$prev $((now + BLACK_TTL))" >> "$BLACK"
-			logger -t mierukop "best-server: $prev was left for $cur by someone else, ignoring it for ${BLACK_TTL}s"
+			logger -t meownetvpn "best-server: $prev was left for $cur by someone else, ignoring it for ${BLACK_TTL}s"
 		fi
 		echo "$cur" > "$SEEN"
 		if [ -s "$BLACK" ]; then
@@ -497,18 +497,18 @@ case "$1" in
 		uci set $CONF.settings.active_server="$bs"; uci commit $CONF
 		echo "$bs" > "$SEEN"
 		echo "switched: $(srv_get "$bs" label) (${bms}ms)"
-		/etc/init.d/mierukop restart >/dev/null 2>&1
+		/etc/init.d/meownetvpn restart >/dev/null 2>&1
 		;;
 	auto-best)
 		[ "$(uci -q get $CONF.settings.auto_best)" = "1" ] || exit 0
-		/usr/bin/mierukop pingall >/dev/null 2>&1
-		/usr/bin/mierukop best-server >/dev/null 2>&1
+		/usr/bin/meownetvpn pingall >/dev/null 2>&1
+		/usr/bin/meownetvpn best-server >/dev/null 2>&1
 		;;
 	sub-refresh)
 		[ "$(uci -q get $CONF.settings.sub_auto)" = "1" ] || exit 0
 		u=$(uci -q get $CONF.settings.sub_url); [ -n "$u" ] || exit 0
-		logger -t mierukop "auto sub-refresh"
-		/usr/bin/mierukop sub "$u" >/dev/null 2>&1 && { /etc/init.d/mierukop restart >/dev/null 2>&1; /etc/mierukop/update-lists.sh apply >/dev/null 2>&1; }
+		logger -t meownetvpn "auto sub-refresh"
+		/usr/bin/meownetvpn sub "$u" >/dev/null 2>&1 && { /etc/init.d/meownetvpn restart >/dev/null 2>&1; /etc/meownetvpn/update-lists.sh apply >/dev/null 2>&1; }
 		;;
 	tunnels)
 		# per-tunnel live status: name|servers|socks|exit
@@ -560,22 +560,22 @@ case "$1" in
 		;;
 	self-update)
 		echo "fetching latest meowMieru from github (via tunnel)…"
-		d=/tmp/mkup; rm -rf "$d"; mkdir -p "$d"; ok=1
+		d=/tmp/mnup; rm -rf "$d"; mkdir -p "$d"; ok=1
 		# (file repo-path : local)
 		for pair in \
-			"files/etc/init.d/mierukop:initd" \
-			"files/etc/mierukop/update-lists.sh:ul" \
-			"files/etc/mierukop/watchdog.sh:wd" \
-			"files/etc/mierukop/lists/exclude.lst:excl" \
-			"files/usr/bin/mierukop:cli" \
-			"luci/htdocs/luci-static/resources/mierukop/lib.js:lib" \
-			"luci/htdocs/luci-static/resources/view/mierukop/overview.js:v_overview" \
-			"luci/htdocs/luci-static/resources/view/mierukop/servers.js:v_servers" \
-			"luci/htdocs/luci-static/resources/view/mierukop/routing.js:v_routing" \
-			"luci/htdocs/luci-static/resources/view/mierukop/diagnostics.js:v_diagnostics" \
-			"luci/htdocs/luci-static/resources/view/mierukop/settings.js:v_settings" \
-			"luci/root/usr/share/luci/menu.d/luci-app-mierukop.json:menu" \
-			"luci/root/usr/share/rpcd/acl.d/luci-app-mierukop.json:acl" \
+			"files/etc/init.d/meownetvpn:initd" \
+			"files/etc/meownetvpn/update-lists.sh:ul" \
+			"files/etc/meownetvpn/watchdog.sh:wd" \
+			"files/etc/meownetvpn/lists/exclude.lst:excl" \
+			"files/usr/bin/meownetvpn:cli" \
+			"luci/htdocs/luci-static/resources/meownetvpn/lib.js:lib" \
+			"luci/htdocs/luci-static/resources/view/meownetvpn/overview.js:v_overview" \
+			"luci/htdocs/luci-static/resources/view/meownetvpn/servers.js:v_servers" \
+			"luci/htdocs/luci-static/resources/view/meownetvpn/routing.js:v_routing" \
+			"luci/htdocs/luci-static/resources/view/meownetvpn/diagnostics.js:v_diagnostics" \
+			"luci/htdocs/luci-static/resources/view/meownetvpn/settings.js:v_settings" \
+			"luci/root/usr/share/luci/menu.d/luci-app-meownetvpn.json:menu" \
+			"luci/root/usr/share/rpcd/acl.d/luci-app-meownetvpn.json:acl" \
 			"VERSION:ver"; do
 			repo_dl "${pair%%:*}" "$d/${pair##*:}" && [ -s "$d/${pair##*:}" ] || { echo "  download failed: ${pair%%:*}"; ok=0; }
 		done
@@ -596,20 +596,20 @@ case "$1" in
 			*) echo "  в VERSION не номер версии"; ok=0 ;;
 		esac
 		[ "$ok" = 1 ] || { echo "обновление отменено (см. причину выше) — осталась версия $VERSION"; rm -rf "$d"; exit 1; }
-		cp "$d/initd" /etc/init.d/mierukop; cp "$d/ul" /etc/mierukop/update-lists.sh
-		cp "$d/wd" /etc/mierukop/watchdog.sh; cp "$d/cli" /usr/bin/mierukop
-		mkdir -p /etc/mierukop/lists; cp "$d/excl" /etc/mierukop/lists/exclude.lst
-		mkdir -p /www/luci-static/resources/mierukop /www/luci-static/resources/view/mierukop
-		cp "$d/lib" /www/luci-static/resources/mierukop/lib.js
-		for v in overview servers routing diagnostics settings; do cp "$d/v_$v" "/www/luci-static/resources/view/mierukop/$v.js"; done
-		rm -f /www/luci-static/resources/view/mierukop/main.js
-		cp "$d/menu" /usr/share/luci/menu.d/luci-app-mierukop.json
-		cp "$d/acl" /usr/share/rpcd/acl.d/luci-app-mierukop.json
-		mkdir -p /etc/mierukop; cp "$d/ver" "$VER_FILE"
-		chmod +x /etc/init.d/mierukop /usr/bin/mierukop /etc/mierukop/*.sh
-		sed -i "s/^Version: .*/Version: $(cat "$VER_FILE")/" /usr/lib/opkg/info/mierukop.control 2>/dev/null
+		cp "$d/initd" /etc/init.d/meownetvpn; cp "$d/ul" /etc/meownetvpn/update-lists.sh
+		cp "$d/wd" /etc/meownetvpn/watchdog.sh; cp "$d/cli" /usr/bin/meownetvpn
+		mkdir -p /etc/meownetvpn/lists; cp "$d/excl" /etc/meownetvpn/lists/exclude.lst
+		mkdir -p /www/luci-static/resources/meownetvpn /www/luci-static/resources/view/meownetvpn
+		cp "$d/lib" /www/luci-static/resources/meownetvpn/lib.js
+		for v in overview servers routing diagnostics settings; do cp "$d/v_$v" "/www/luci-static/resources/view/meownetvpn/$v.js"; done
+		rm -f /www/luci-static/resources/view/meownetvpn/main.js
+		cp "$d/menu" /usr/share/luci/menu.d/luci-app-meownetvpn.json
+		cp "$d/acl" /usr/share/rpcd/acl.d/luci-app-meownetvpn.json
+		mkdir -p /etc/meownetvpn; cp "$d/ver" "$VER_FILE"
+		chmod +x /etc/init.d/meownetvpn /usr/bin/meownetvpn /etc/meownetvpn/*.sh
+		sed -i "s/^Version: .*/Version: $(cat "$VER_FILE")/" /usr/lib/opkg/info/meownetvpn.control 2>/dev/null
 		rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null; /etc/init.d/rpcd reload >/dev/null 2>&1
-		/etc/init.d/mierukop restart >/dev/null 2>&1
+		/etc/init.d/meownetvpn restart >/dev/null 2>&1
 		rm -rf "$d"
 		echo "updated to $(cat "$VER_FILE")"
 		;;
@@ -618,8 +618,8 @@ case "$1" in
 		[ "$(uci -q get $CONF.settings.auto_update)" = "1" ] || exit 0
 		remote=$(repo_cat VERSION | tr -d ' \r\n\t')
 		[ -n "$remote" ] && [ "$remote" != "$VERSION" ] || exit 0
-		logger -t mierukop "auto-update $VERSION -> $remote"
-		/usr/bin/mierukop self-update >/dev/null 2>&1
+		logger -t meownetvpn "auto-update $VERSION -> $remote"
+		/usr/bin/meownetvpn self-update >/dev/null 2>&1
 		;;
 	speedtest)
 		# Cloudflare's speed endpoint refuses mieru/datacenter IPs (returns 0) — use
@@ -641,7 +641,7 @@ case "$1" in
 		fi
 		# upload measured against Google's generate_204 collector is unreliable; keep
 		# Cloudflare __up but treat 0 as "n/a" rather than a real reading
-		# per-PID name + trap: the fixed /tmp/mierukop/up.bin was shared by two
+		# per-PID name + trap: the fixed /tmp/meownetvpn/up.bin was shared by two
 		# clicks from two browser tabs (one run's rm pulled the file out from
 		# under the other's upload) and was left behind in tmpfs whenever rpcd
 		# killed the exec mid-test
@@ -683,23 +683,23 @@ case "$1" in
 		echo "$now,$(((rx-prx)/dt)),$(((tx-ptx)/dt))" >> "$TRAFFIC_LOG"
 		;;
 	history) [ -f "$TRAFFIC_LOG" ] && tail -n 180 "$TRAFFIC_LOG" || true ;;
-	update) echo "downloading lists via tunnel…"; /etc/mierukop/update-lists.sh download; echo "done. $(/usr/bin/mierukop count) subnets in set" ;;
-	lists)  echo "available:"; /etc/mierukop/update-lists.sh available | tr " " "\n" | sed "/^$/d;s/^/  /" ;;
+	update) echo "downloading lists via tunnel…"; /etc/meownetvpn/update-lists.sh download; echo "done. $(/usr/bin/meownetvpn count) subnets in set" ;;
+	lists)  echo "available:"; /etc/meownetvpn/update-lists.sh available | tr " " "\n" | sed "/^$/d;s/^/  /" ;;
 	list)
 		case "$2" in
 			show) echo "enabled: $(uci -q get $CONF.settings.community_lists)" ;;
 			add)
-				[ -n "$3" ] || { echo "usage: mierukop list add <name>"; exit 1; }
+				[ -n "$3" ] || { echo "usage: meownetvpn list add <name>"; exit 1; }
 				cur=" $(uci -q get $CONF.settings.community_lists) "
 				case "$cur" in *" $3 "*) echo "$3 already enabled"; exit 0;; esac
 				uci set $CONF.settings.community_lists="$(echo $cur $3)"; uci commit $CONF
-				echo "enabled $3; run: mierukop update" ;;
+				echo "enabled $3; run: meownetvpn update" ;;
 			del)
-				[ -n "$3" ] || { echo "usage: mierukop list del <name>"; exit 1; }
+				[ -n "$3" ] || { echo "usage: meownetvpn list del <name>"; exit 1; }
 				new=$(uci -q get $CONF.settings.community_lists | tr " " "\n" | grep -vx "$3" | tr "\n" " ")
 				uci set $CONF.settings.community_lists="$new"; uci commit $CONF
-				echo "disabled $3; run: mierukop restart" ;;
-			*) echo "usage: mierukop list [show|add <name>|del <name>]" ;;
+				echo "disabled $3; run: meownetvpn restart" ;;
+			*) echo "usage: meownetvpn list [show|add <name>|del <name>]" ;;
 		esac ;;
 	server)
 		case "$2" in
@@ -710,7 +710,7 @@ case "$1" in
 					echo "$mark $s | $(srv_get "$s" label) | $(srv_get "$s" address):$(srv_get "$s" port) | $(srv_get "$s" transport)"
 				done ;;
 			add)
-				[ $# -ge 7 ] || { echo "usage: mierukop server add <label> <ip> <port> <user> <pass> [TCP|UDP]"; exit 1; }
+				[ $# -ge 7 ] || { echo "usage: meownetvpn server add <label> <ip> <port> <user> <pass> [TCP|UDP]"; exit 1; }
 				id="srv$(date +%s)"
 				uci set $CONF.$id=server
 				uci set $CONF.$id.label="$3"; uci set $CONF.$id.address="$4"; uci set $CONF.$id.port="$5"
@@ -718,12 +718,12 @@ case "$1" in
 				uci commit $CONF
 				echo "added server $id ($3)" ;;
 			del)
-				[ -n "$3" ] || { echo "usage: mierukop server del <name>"; exit 1; }
+				[ -n "$3" ] || { echo "usage: meownetvpn server del <name>"; exit 1; }
 				# type guard, the same one `server use` below already had: without
-				# it `mierukop server del settings` deleted the settings section —
+				# it `meownetvpn server del settings` deleted the settings section —
 				# enabled, ports, lists, everything — printed "deleted settings"
 				# and left the bypass off from the next boot on
-				[ "$(uci -q get "$CONF.$3")" = "server" ] || { echo "no such server: $3 (mierukop server list)"; exit 1; }
+				[ "$(uci -q get "$CONF.$3")" = "server" ] || { echo "no such server: $3 (meownetvpn server list)"; exit 1; }
 				# a group that keeps the name of a deleted server still gets its
 				# tunnel built, with an empty mieru server array — its traffic is
 				# marked and then black-holed instead of falling back
@@ -734,11 +734,11 @@ case "$1" in
 				[ "$(uci -q get $CONF.settings.active_server)" = "$3" ] && uci -q delete $CONF.settings.active_server
 				uci -q delete "$CONF.$3"; uci commit $CONF; echo "deleted $3" ;;
 			use)
-				[ -n "$3" ] || { echo "usage: mierukop server use <name>"; exit 1; }
+				[ -n "$3" ] || { echo "usage: meownetvpn server use <name>"; exit 1; }
 				[ "$(uci -q get $CONF.$3)" = "server" ] || { echo "no such server: $3"; exit 1; }
 				uci set $CONF.settings.active_server="$3"; uci commit $CONF
-				echo "active server -> $3; run: mierukop restart" ;;
-			*) echo "usage: mierukop server [list|add|del <name>|use <name>]" ;;
+				echo "active server -> $3; run: meownetvpn restart" ;;
+			*) echo "usage: meownetvpn server [list|add|del <name>|use <name>]" ;;
 		esac ;;
 	group)
 		# route a specific list through a specific server via its own tunnel
@@ -751,8 +751,8 @@ case "$1" in
 				done
 				[ -z "$(uci show $CONF 2>/dev/null | grep -c '=group')" ] && echo "  (групп нет)" ;;
 			add)
-				# mierukop group add <name> <server-section[ server2]> <list> [list2...]
-				[ $# -ge 5 ] || { echo "usage: mierukop group add <name> <server-section> <list> [list2...]"; echo "  серверы: mierukop server list"; exit 1; }
+				# meownetvpn group add <name> <server-section[ server2]> <list> [list2...]
+				[ $# -ge 5 ] || { echo "usage: meownetvpn group add <name> <server-section> <list> [list2...]"; echo "  серверы: meownetvpn server list"; exit 1; }
 				# `tr -cd` deletes every byte outside ASCII alnum, and UTF-8
 				# Cyrillic/emoji have none — 'Ютуб' and 'Реклама' both collapsed
 				# to the bare prefix "g", so the second group add silently ate the
@@ -762,37 +762,57 @@ case "$1" in
 				[ "$gn" = g ] && gn="g$(printf '%s' "$3" | md5sum | cut -c1-8)"
 				[ "$(uci -q get "$CONF.$gn")" = "group" ] && {
 					echo "группа $gn ($(uci -q get $CONF.$gn.label)) уже существует — выберите другое имя"
-					echo "  изменить серверы: mierukop group server $gn <server>"
-					echo "  удалить: mierukop group del $gn"; exit 1; }
+					echo "  изменить серверы: meownetvpn group server $gn <server>"
+					echo "  удалить: meownetvpn group del $gn"; exit 1; }
 				sv="$4"; [ "$(uci -q get $CONF.$sv)" = "server" ] || {
 					# try to resolve by label substring
 					for s in $(server_list); do case "$(srv_get "$s" label)" in *"$4"*) sv="$s"; break;; esac; done; }
-				[ "$(uci -q get $CONF.$sv)" = "server" ] || { echo "no such server: $4 (mierukop server list)"; exit 1; }
+				[ "$(uci -q get $CONF.$sv)" = "server" ] || { echo "no such server: $4 (meownetvpn server list)"; exit 1; }
 				uci set $CONF.$gn=group; uci set $CONF.$gn.enabled=1
 				uci set $CONF.$gn.label="$3"; uci -q delete $CONF.$gn.server; uci add_list $CONF.$gn.server="$sv"
 				shift 4; uci set $CONF.$gn.community_lists="$*"
 				uci commit $CONF
-				echo "group $gn: lists [$*] via $(srv_get "$sv" label); run: mierukop restart && mierukop update" ;;
+				echo "group $gn: lists [$*] via $(srv_get "$sv" label); run: meownetvpn restart && meownetvpn update" ;;
 			del)
-				[ -n "$3" ] || { echo "usage: mierukop group del <name>"; exit 1; }
+				[ -n "$3" ] || { echo "usage: meownetvpn group del <name>"; exit 1; }
 				# same type guard as `server del`: this deleted any section it was
 				# handed, settings included
-				[ "$(uci -q get "$CONF.$3")" = "group" ] || { echo "no such group: $3 (mierukop group list)"; exit 1; }
-				uci -q delete "$CONF.$3"; uci commit $CONF; echo "deleted $3; run: mierukop restart" ;;
+				[ "$(uci -q get "$CONF.$3")" = "group" ] || { echo "no such group: $3 (meownetvpn group list)"; exit 1; }
+				uci -q delete "$CONF.$3"; uci commit $CONF; echo "deleted $3; run: meownetvpn restart" ;;
 			server)
-				# mierukop group server <name> <server-section[ server2 ...]>  (set the group's servers)
-				[ -n "$3" ] && [ -n "$4" ] || { echo "usage: mierukop group server <name> <server-section...>"; exit 1; }
+				# meownetvpn group server <name> <server-section[ server2 ...]>  (set the group's servers)
+				[ -n "$3" ] && [ -n "$4" ] || { echo "usage: meownetvpn group server <name> <server-section...>"; exit 1; }
 				gn="$3"; shift 3; uci -q delete $CONF.$gn.server; for s in $*; do uci add_list $CONF.$gn.server="$s"; done; uci commit $CONF
-				echo "group $gn -> servers: $*; run: mierukop restart" ;;
-			*) echo "usage: mierukop group [list|add <name> <server> <lists...>|del <name>|server <name> <servers...>]" ;;
+				echo "group $gn -> servers: $*; run: meownetvpn restart" ;;
+			*) echo "usage: meownetvpn group [list|add <name> <server> <lists...>|del <name>|server <name> <servers...>]" ;;
 		esac ;;
 	sub)
-		# import mieru servers from a Clash-format subscription (meownet etc.)
-		url="$2"; [ -n "$url" ] || { echo "usage: mierukop sub <clash-subscription-url>"; exit 1; }
+		# import mieru servers from a Clash-format subscription (meownetvpn etc.)
+		url="$2"; [ -n "$url" ] || { echo "usage: meownetvpn sub <clash-subscription-url>"; exit 1; }
 		tmp="$STATE_DIR/sub.yaml"; tsv="$STATE_DIR/sub.tsv"
 		echo "fetching subscription…"
 		curl -fsSL --max-time 30 "$url" -o "$tmp" 2>/dev/null || { echo "download failed"; exit 1; }
-		# parse each `type: mieru` proxy block -> TSV (name server port transport user pass mux)
+		# A subscription arrives in one of two shapes and both are in the wild: Clash
+		# YAML (what the mieru panel serves) and a list of proxy URIs, usually
+		# base64-wrapped (what VLESS panels serve). Detect it — the operator pastes a
+		# link, not a format, and guessing wrong reports "no servers found" for a
+		# subscription that is perfectly fine.
+		if grep -qE '^[[:space:]]*(proxies|mixed-port|port):' "$tmp" 2>/dev/null; then
+			fmt=clash
+		elif grep -q '://' "$tmp" 2>/dev/null; then
+			fmt=uri
+		else
+			tr -d '\n\r' < "$tmp" | base64 -d > "$tmp.dec" 2>/dev/null
+			if grep -q '://' "$tmp.dec" 2>/dev/null; then mv "$tmp.dec" "$tmp"; fmt=uri
+			else rm -f "$tmp.dec" "$tmp"; echo "unrecognised subscription format (not Clash YAML, not a proxy-URI list)"; exit 1; fi
+		fi
+
+		# TSV columns, one row per server:
+		#   type name server port net user pass mux sni path host sec flow fp xmode
+		# `net` carries the mieru transport (TCP/UDP) or the vless stream network.
+		# `user` carries the mieru username or the vless uuid — one column, because
+		# every consumer below already branches on `type` anyway.
+		if [ "$fmt" = clash ]; then
 		awk '
 		  # A YAML scalar: strip only a MATCHED surrounding quote pair. The old
 		  # blanket gsub(/"/,"",v) deleted quotes INSIDE the value too, and a
@@ -803,24 +823,100 @@ case "$1" in
 		    sub(/^[^:]*:[[:space:]]*/, "", v)
 		    sub(/[[:space:]]+$/, "", v)
 		    if (v ~ /^".*"$/) return substr(v, 2, length(v) - 2)
+		    if (v ~ /^'"'"'.*'"'"'$/) return substr(v, 2, length(v) - 2)
 		    sub(/[[:space:]]+#.*$/, "", v)
 		    return v
 		  }
+		  # TAB is an IFS *whitespace* character, so `read` collapses a run of them and
+		  # an empty column in the middle silently shifts every later value one place
+		  # left — the security ends up in the path, the path in the host. Never emit an
+		  # empty field: "-" stands for one, and no value here can legitimately be "-"
+		  # (a path starts with "/", a uuid is hex, a level is an enum).
+		  function d(v) { return (v == "") ? "-" : v }
+		  function emit() {
+		    if (s == "") return
+		    if (t == "mieru")
+		      print "mieru\t"d(n)"\t"s"\t"p"\t"d(tr)"\t"d(u)"\t"d(pw)"\t"d(mx)"\t-\t-\t-\t-\t-\t-\t-"
+		    else if (t == "vless") {
+		      if (sni == "") sni = s
+		      if (net == "") net = "tcp"
+		      print "vless\t"d(n)"\t"s"\t"p"\t"net"\t"d(uuid)"\t-\t-\t"d(sni)"\t"d(path)"\t"d(hh)"\t"d(sec)"\t"d(flow)"\t"d(fp)"\t"d(xmode)
+		    }
+		  }
 		  /^[[:space:]]*-[[:space:]]*name:/ {
-		    if(t=="mieru"&&s!="") print n"\t"s"\t"p"\t"tr"\t"u"\t"pw"\t"mx;
-		    n=val($0);
-		    t="";s="";p="";tr="TCP";u="";pw="";mx="MULTIPLEXING_MIDDLE"; next }
-		  /^[[:space:]]*type:/        {t=val($0)}
-		  /^[[:space:]]*server:/      {s=val($0)}
-		  /^[[:space:]]*port:/        {p=val($0)}
-		  /^[[:space:]]*transport:/   {tr=val($0)}
-		  /^[[:space:]]*username:/    {u=val($0)}
-		  /^[[:space:]]*password:/    {pw=val($0)}
-		  /^[[:space:]]*multiplexing:/{mx=val($0)}
-		  END { if(t=="mieru"&&s!="") print n"\t"s"\t"p"\t"tr"\t"u"\t"pw"\t"mx }
+		    emit()
+		    n=val($0)
+		    t="";s="";p="";tr="TCP";u="";pw="";mx="MULTIPLEXING_MIDDLE"
+		    uuid="";sni="";path="";hh="";sec="";flow="";fp="";xmode="";net=""
+		    next }
+		  /^[[:space:]]*type:/         {t=val($0)}
+		  /^[[:space:]]*server:/       {s=val($0)}
+		  /^[[:space:]]*port:/         {p=val($0)}
+		  /^[[:space:]]*transport:/    {tr=val($0)}
+		  /^[[:space:]]*username:/     {u=val($0)}
+		  /^[[:space:]]*password:/     {pw=val($0)}
+		  /^[[:space:]]*multiplexing:/ {mx=val($0)}
+		  /^[[:space:]]*uuid:/         {uuid=val($0)}
+		  /^[[:space:]]*(servername|sni):/ {sni=val($0)}
+		  /^[[:space:]]*network:/      {net=val($0)}
+		  /^[[:space:]]*(client-fingerprint|fingerprint):/ {fp=val($0)}
+		  /^[[:space:]]*flow:/         {flow=val($0)}
+		  /^[[:space:]]*tls:/          {if (val($0) == "true") sec="tls"}
+		  /^[[:space:]]*path:/         {if (path == "") path=val($0)}
+		  /^[[:space:]]*host:/         {if (hh == "") hh=val($0)}
+		  /^[[:space:]]*mode:/         {xmode=val($0)}
+		  /^[[:space:]]*grpc-service-name:/ {path="/" val($0)}
+		  END { emit() }
 		' "$tmp" > "$tsv"
+		else
+		# ── proxy-URI list ────────────────────────────────────────────────────────
+		# vless://<uuid>@<host>:<port>?<query>#<label>
+		# Only vless is imported; a vmess/ss/trojan line is skipped with a word, not
+		# silently, so "10 servers in the panel, 4 imported" is explainable.
+		: > "$tsv"
+		urldec() { printf '%b' "$(printf '%s' "$1" | sed 's/+/ /g; s/%/\\x/g')"; }
+		qval() {  # $1=query $2=key -> value ("" if absent)
+			printf '%s' "$1" | tr '&' '\n' | awk -F= -v k="$2" '$1==k{sub(/^[^=]*=/,""); print; exit}'
+		}
+		while IFS= read -r line; do
+			line=$(printf '%s' "$line" | tr -d '\r')
+			case "$line" in
+				vless://*) ;;
+				vmess://*|ss://*|trojan://*|hysteria*://*)
+					echo "  skipped $(printf '%s' "$line" | cut -d: -f1): only vless is supported"; continue ;;
+				*) continue ;;
+			esac
+			body=${line#vless://}
+			label=""; case "$body" in *"#"*) label=$(urldec "${body##*#}"); body=${body%%#*} ;; esac
+			query="";  case "$body" in *"?"*) query=${body#*\?}; body=${body%%\?*} ;; esac
+			uuid=${body%%@*}; hostport=${body#*@}
+			# IPv6 literals arrive as [::1]:443 — splitting on the LAST colon keeps them intact
+			case "$hostport" in
+				\[*\]:*) host=${hostport%%\]:*}; host=${host#\[}; port=${hostport##*]:} ;;
+				*) host=${hostport%:*}; port=${hostport##*:} ;;
+			esac
+			[ -n "$uuid" ] && [ -n "$host" ] && [ -n "$port" ] || { echo "  skipped a malformed vless:// line"; continue; }
+			net=$(qval "$query" type);      [ -n "$net" ] || net=tcp
+			sec=$(qval "$query" security);  [ -n "$sec" ] || sec=none
+			sni=$(urldec "$(qval "$query" sni)"); [ -n "$sni" ] || sni=$(urldec "$(qval "$query" peer)")
+			[ -n "$sni" ] || sni="$host"
+			path=$(urldec "$(qval "$query" path)")
+			hh=$(urldec "$(qval "$query" host)"); [ -n "$hh" ] || hh="$sni"
+			flow=$(qval "$query" flow)
+			fp=$(qval "$query" fp);         [ -n "$fp" ] || fp=chrome
+			xmode=$(qval "$query" mode);    [ -n "$xmode" ] || xmode=auto
+			[ -n "$label" ] || label="$host:$port"
+			# "-" for an absent value, never an empty column — see the note in the awk
+			# above: a run of TABs collapses in `read` and shifts every later field.
+			for v in label net uuid sni path hh sec flow fp xmode; do
+				eval "[ -n \"\$$v\" ] || $v=-"
+			done
+			printf 'vless\t%s\t%s\t%s\t%s\t%s\t-\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+				"$label" "$host" "$port" "$net" "$uuid" "$sni" "$path" "$hh" "$sec" "$flow" "$fp" "$xmode" >> "$tsv"
+		done < "$tmp"
+		fi
 		cnt=$(grep -c . "$tsv" 2>/dev/null)
-		[ "${cnt:-0}" -gt 0 ] || { echo "no mieru servers found in subscription"; rm -f "$tmp" "$tsv"; exit 1; }
+		[ "${cnt:-0}" -gt 0 ] || { echo "no mieru or vless servers found in subscription"; rm -f "$tmp" "$tsv"; exit 1; }
 		# Import in place. Wiping every server section first orphaned the section
 		# NAMES that group.server and settings.active_server store: init.d then
 		# built those tunnels with an empty mieru server array, so the group's
@@ -836,9 +932,16 @@ case "$1" in
 		# read -r: without it a backslash in a generated password is eaten before
 		# it ever reaches uci, and mieru then fails to authenticate everywhere —
 		# indistinguishable from the DPI blocking this module fights
-		while IFS="$TAB" read -r name srv port tr user pass mux; do
+		nvless=0; nmieru=0
+		# "-" is the empty marker the two parsers above agree on
+		unmark() { [ "$1" = "-" ] && echo "" || echo "$1"; }
+		while IFS="$TAB" read -r styp name srv port net user pass mux sni path hh sec flow fp xmode; do
 			[ -n "$srv" ] || continue
-			# a non-numeric port lands verbatim in the mieru JSON and makes the
+			name=$(unmark "$name"); net=$(unmark "$net"); user=$(unmark "$user")
+			pass=$(unmark "$pass"); mux=$(unmark "$mux"); sni=$(unmark "$sni")
+			path=$(unmark "$path"); hh=$(unmark "$hh");   sec=$(unmark "$sec")
+			flow=$(unmark "$flow"); fp=$(unmark "$fp");   xmode=$(unmark "$xmode")
+			# a non-numeric port lands verbatim in the generated JSON and makes the
 			# whole profile invalid, taking every tunnel down with it
 			case "$port" in ''|*[!0-9]*) echo "  skipped $srv: bad port '$port'"; continue ;; esac
 			id=$(find_srv "$srv" "$port")
@@ -852,16 +955,42 @@ case "$1" in
 				# second server silently overwrote the first
 				id="srv$(printf '%s' "$srv:$port" | md5sum | cut -c1-10)"
 			fi
+			# Carry over the two fields an OPERATOR sets by hand, then wipe the section
+			# and write it fresh. Setting over the old one leaves stale keys behind, and
+			# a section that changes protocol keeps a password or a uuid that no longer
+			# applies — the generated config then carries a credential from the other
+			# engine, which fails in a way that looks like the server rejecting us.
+			ofail=$(uci -q get $CONF.$id.failover)
+			oprobe=$(uci -q get $CONF.$id.probe_url)
+			uci -q delete $CONF.$id
 			uci set $CONF.$id=server
 			uci set $CONF.$id.label="$name"
 			uci set $CONF.$id.address="$srv"
 			uci set $CONF.$id.port="$port"
-			uci set $CONF.$id.transport="${tr:-TCP}"
-			uci set $CONF.$id.username="$user"
-			uci set $CONF.$id.password="$pass"
+			[ -n "$ofail" ] && uci set $CONF.$id.failover="$ofail"
+			[ -n "$oprobe" ] && uci set $CONF.$id.probe_url="$oprobe"
+			if [ "$styp" = vless ]; then
+				uci set $CONF.$id.type='vless'
+				uci set $CONF.$id.uuid="$user"
+				uci set $CONF.$id.network="${net:-tcp}"
+				uci set $CONF.$id.security="${sec:-none}"
+				[ -n "$sni" ]   && uci set $CONF.$id.sni="$sni"
+				[ -n "$path" ]  && uci set $CONF.$id.path="$path"
+				[ -n "$hh" ]    && uci set $CONF.$id.host="$hh"
+				[ -n "$flow" ]  && uci set $CONF.$id.flow="$flow"
+				[ -n "$fp" ]    && uci set $CONF.$id.fingerprint="$fp"
+				[ -n "$xmode" ] && uci set $CONF.$id.xmode="$xmode"
+				nvless=$((nvless+1))
+			else
+				uci set $CONF.$id.type='mieru'
+				uci set $CONF.$id.transport="${net:-TCP}"
+				uci set $CONF.$id.username="$user"
+				uci set $CONF.$id.password="$pass"
+				[ -z "$muxset" ] && muxset="$mux"
+				nmieru=$((nmieru+1))
+			fi
 			keep="$keep $id"; imported=$((imported+1))
 			[ -z "$first" ] && first="$id"
-			[ -z "$muxset" ] && muxset="$mux"
 		done < "$tsv"
 		[ "$imported" -gt 0 ] || { echo "subscription parsed, but no usable server in it"; rm -f "$tmp" "$tsv"; exit 1; }
 		# only now drop what the subscription no longer offers
@@ -915,18 +1044,80 @@ case "$1" in
 		uci commit $CONF
 		rm -f "$tmp" "$tsv"
 		# $cnt counts TSV rows; report what actually reached uci
-		echo "imported $imported mieru server(s); mux=$muxset; active=$(uci -q get $CONF.settings.active_server)"
-		echo "all share one login -> mieru fails over between them natively."
-		echo "run: mierukop restart"
+		echo "imported $imported server(s): $nvless vless, $nmieru mieru; active=$(uci -q get $CONF.settings.active_server)"
+		[ "$nvless" -gt 0 ] && [ ! -x /usr/bin/xray ] && \
+			echo "WARNING: vless servers imported but /usr/bin/xray is missing — run: meownetvpn install-xray"
+		echo "run: meownetvpn restart"
+		;;
+	install-xray)
+		# Xray ships a 32 MB binary and these routers have ~20 MB of overlay, so the
+		# upstream release simply does not fit — the mirror carries a UPX-packed build
+		# (~7.6 MB, measured) which does, and which starts in the same second. Falling
+		# back to the upstream zip would "succeed" at filling the flash and brick the
+		# overlay, so there is deliberately no such fallback: a missing mirror is an
+		# error you can act on, a full flash is not.
+		base=$(uci -q get $CONF.settings.xray_mirror)
+		[ -n "$base" ] || base="https://meownetvpn.app/updates/xray"
+		arch=$(uname -m)
+		case "$arch" in
+			aarch64|arm64) a=arm64 ;;
+			armv7l|armv7)  a=arm32 ;;
+			x86_64|amd64)  a=amd64 ;;
+			mips)          a=mips ;;
+			mipsel|mipsle) a=mipsle ;;
+			*) echo "unsupported architecture: $arch"; exit 1 ;;
+		esac
+		url="$base/xray-$a"
+		echo "fetching $url"
+		tmpb=/tmp/xray.dl; rm -f "$tmpb"
+		curl -fs --proxy "$PROXY" --max-time 300 -o "$tmpb" "$url" 2>/dev/null || \
+		curl -fs --max-time 300 -o "$tmpb" "$url" 2>/dev/null || { echo "download failed"; rm -f "$tmpb"; exit 1; }
+		[ -s "$tmpb" ] || { echo "downloaded file is empty"; rm -f "$tmpb"; exit 1; }
+		chmod +x "$tmpb"
+		# Verify it RUNS before it is allowed near /usr/bin: a UPX-packed binary can
+		# unpack fine on one kernel and fault on another, and an xray that faults is a
+		# tunnel that never comes up on a router you may not be standing next to.
+		v=$("$tmpb" version 2>&1 | head -1)
+		case "$v" in
+			Xray*) : ;;
+			*) echo "downloaded binary does not run here: $v"; rm -f "$tmpb"; exit 1 ;;
+		esac
+		free=$(df -k /overlay 2>/dev/null | awk 'NR==2{print $4}')
+		need=$(( $(wc -c < "$tmpb") / 1024 + 512 ))
+		if [ -n "$free" ] && [ "$free" -lt "$need" ]; then
+			echo "not enough overlay space: ${free}K free, ${need}K needed"
+			echo "free some up (mieru is ${mrs:-12}MB: 'meownetvpn drop-mieru' once every server is vless)"
+			rm -f "$tmpb"; exit 1
+		fi
+		mv "$tmpb" /usr/bin/xray && chmod +x /usr/bin/xray
+		echo "installed: $(/usr/bin/xray version 2>&1 | head -1)"
+		echo "overlay now: $(df -h /overlay 2>/dev/null | awk 'NR==2{print $4" free"}')"
+		;;
+	drop-mieru)
+		# Reclaims the ~12 MB mieru occupies, but only once nothing depends on it —
+		# a server section still typed mieru would come up as a tunnel with no engine.
+		left=""
+		for sv in $(server_list); do
+			[ "$(uci -q get $CONF.$sv.type)" = "vless" ] || left="$left $(srv_get "$sv" label)"
+		done
+		if [ -n "$left" ]; then
+			echo "refusing: these servers still use mieru:$left"
+			echo "import a vless subscription first, or delete them"
+			exit 1
+		fi
+		rm -f /usr/bin/mieru
+		rm -rf /root/.config/mieru 2>/dev/null
+		echo "mieru removed; overlay: $(df -h /overlay 2>/dev/null | awk 'NR==2{print $4" free"}')"
+		echo "run: meownetvpn restart"
 		;;
 	set-server)
-		[ $# -eq 5 ] || { echo "usage: mierukop set-server <ip> <port> <user> <pass>"; exit 1; }
+		[ $# -eq 5 ] || { echo "usage: meownetvpn set-server <ip> <port> <user> <pass>"; exit 1; }
 		sv=$(active_server)
 		[ -n "$sv" ] || { sv=main; uci set $CONF.$sv=server; uci set $CONF.settings.active_server=$sv; uci set $CONF.$sv.label="Server 1"; uci set $CONF.$sv.transport=TCP; }
 		uci set $CONF.$sv.address="$2"; uci set $CONF.$sv.port="$3"
 		uci set $CONF.$sv.username="$4"; uci set $CONF.$sv.password="$5"
 		uci commit $CONF
-		echo "saved to server '$sv'; run: mierukop restart"
+		echo "saved to server '$sv'; run: meownetvpn restart"
 		;;
 	count)
 		# Count ELEMENTS, with the very expression update-lists.sh uses to write
@@ -938,12 +1129,12 @@ case "$1" in
 			grep -oE '([0-9]+\.){3}[0-9]+(/[0-9]+)?(-([0-9]+\.){3}[0-9]+)?' | wc -l)
 		echo "$c" > "$STATE_DIR/subnets.count"; echo "$c" ;;
 	add-domain)
-		[ -n "$2" ] || { echo "usage: mierukop add-domain <domain>"; exit 1; }
+		[ -n "$2" ] || { echo "usage: meownetvpn add-domain <domain>"; exit 1; }
 		uci add_list $CONF.user.domain="$2"; uci commit $CONF
-		echo "added domain $2; run: mierukop restart"
+		echo "added domain $2; run: meownetvpn restart"
 		;;
 	add-subnet)
-		[ -n "$2" ] || { echo "usage: mierukop add-subnet <cidr>"; exit 1; }
+		[ -n "$2" ] || { echo "usage: meownetvpn add-subnet <cidr>"; exit 1; }
 		uci add_list $CONF.user.subnet="$2"; uci commit $CONF
 		nft add element $NFT_TABLE $NFT_SET "{ $2 }" 2>/dev/null
 		echo "added subnet $2"

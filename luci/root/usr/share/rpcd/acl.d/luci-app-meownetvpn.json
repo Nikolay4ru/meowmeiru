@@ -1,0 +1,23 @@
+{
+	"luci-app-meownetvpn": {
+		"description": "Grant access to meownetvpn configuration",
+		"read": {
+			"uci": [ "meownetvpn" ],
+			"file": {
+				"/usr/bin/meownetvpn": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "meownetvpn" ],
+			"file": {
+				"/usr/bin/meownetvpn": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec" ]
+			}
+		}
+	}
+}

@@ -2,7 +2,7 @@
 'require view';
 'require form';
 'require uci';
-'require mierukop.lib as lib';
+'require meownetvpn.lib as lib';
 
 var LISTS=['telegram','meta','twitter','discord','roblox','cloudflare','hetzner','digitalocean',
   'youtube','tiktok','google_ai','google_play','hdrezka','russia_inside','russia_outside',
@@ -14,7 +14,7 @@ var LISTS=['telegram','meta','twitter','discord','roblox','cloudflare','hetzner'
 // sberbank.ru!) or one over-long label from a pasted query string makes dnsmasq
 // reject the whole conf-dir and takes DNS *and* DHCP down for the entire LAN.
 // A pasted URL is accepted by dnsmasq but never matches anything, so the site the
-// user just "routed" quietly keeps going direct. `mierukop route-add` already
+// user just "routed" quietly keeps going direct. `meownetvpn route-add` already
 // normalises scheme/port/path — the form was the only way in that did not.
 var RX_DOMAIN=/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 function validDomain(sid, v){
@@ -30,9 +30,9 @@ return lib.page({
   render: function(){
     var self=this, m, s, o;
 
-    m=new form.Map('mierukop','',_('Что попадает в туннель. Группы отправляют конкретные списки через конкретный сервер; остальное идёт через активный сервер.'));
+    m=new form.Map('meownetvpn','',_('Что попадает в туннель. Группы отправляют конкретные списки через конкретный сервер; остальное идёт через активный сервер.'));
 
-    s=m.section(form.NamedSection,'settings','mierukop',_('Списки сообщества'));
+    s=m.section(form.NamedSection,'settings','meownetvpn',_('Списки сообщества'));
     s.anonymous=true; s.addremove=false;
     o=s.option(form.MultiValue,'community_lists',_('Сервисы через туннель'),
       _('Списки itdoginfo/allow-domains. После изменения нажмите «Сохранить и применить», затем обновите списки на вкладке «Обзор».'));
@@ -48,12 +48,12 @@ return lib.page({
     s.option(form.Value,'label',_('Название'));
     o=s.option(form.DummyValue,'_srv',_('Сервер'));
     o.cfgvalue=function(sid){
-      var v=uci.get('mierukop',sid,'server'); if(!v) return '—';
+      var v=uci.get('meownetvpn',sid,'server'); if(!v) return '—';
       if(!Array.isArray(v)) v=String(v).split(/\s+/);
-      return v.filter(Boolean).map(function(n){ var sv=uci.get('mierukop',n); return (sv&&sv.label)?sv.label:n; }).join(', ');
+      return v.filter(Boolean).map(function(n){ var sv=uci.get('meownetvpn',n); return (sv&&sv.label)?sv.label:n; }).join(', ');
     };
     o=s.option(form.MultiValue,'server',_('Серверы группы (failover)')); o.modalonly=true;
-    uci.sections('mierukop','server').forEach(function(sv){
+    uci.sections('meownetvpn','server').forEach(function(sv){
       o.value(sv['.name'], self.srvLabel(sv['.name'], (sv.label||sv['.name'])));
     });
     o=s.option(form.MultiValue,'community_lists',_('Списки')); o.display_size=10;

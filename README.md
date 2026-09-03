@@ -1,4 +1,4 @@
-# mierukop
+# meownetvpn
 
 **Policy routing over a [mieru](https://github.com/enfein/mieru) SOCKS5 transport for OpenWrt** — a podkop-style module, but built around mieru instead of sing-box.
 
@@ -36,28 +36,28 @@ sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main/insta
 If GitHub is blocked on the router, serve the files from your own host and:
 
 ```sh
-MIERUKOP_MIRROR="https://router.koleso.app/mierukop" \
+MEOWNETVPN_MIRROR="https://router.koleso.app/meownetvpn" \
   sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main/install.sh)
 ```
 
 ## Configure & start
 
 ```sh
-mierukop set-server <server_ip> <port> <username> <password>
-mierukop restart
-mierukop status      # service + tunnel health
-mierukop test        # exit IP + Telegram reachability through the tunnel
+meownetvpn set-server <server_ip> <port> <username> <password>
+meownetvpn restart
+meownetvpn status      # service + tunnel health
+meownetvpn test        # exit IP + Telegram reachability through the tunnel
 ```
 
 ## Route more traffic
 
 ```sh
-mierukop add-domain instagram.com
-mierukop add-subnet 31.13.24.0/21
-mierukop update          # refresh community subnet lists (via the tunnel)
+meownetvpn add-domain instagram.com
+meownetvpn add-subnet 31.13.24.0/21
+meownetvpn update          # refresh community subnet lists (via the tunnel)
 ```
 
-Or edit `/etc/config/mierukop` (uci) and `mierukop restart`.
+Or edit `/etc/config/meownetvpn` (uci) and `meownetvpn restart`.
 
 ## Requirements
 
@@ -68,10 +68,10 @@ OpenWrt 22.03+ (nftables/fw4), `dnsmasq-full`, `kmod-tun`. The installer pulls t
 
 | Path | Purpose |
 |---|---|
-| `/etc/config/mierukop` | uci configuration |
-| `/etc/init.d/mierukop` | service (procd): runs mieru + tun2socks, sets up routing |
-| `/etc/mierukop/update-lists.sh` | downloads + loads subnet lists |
-| `/usr/bin/mierukop` | CLI |
+| `/etc/config/meownetvpn` | uci configuration |
+| `/etc/init.d/meownetvpn` | service (procd): runs mieru + tun2socks, sets up routing |
+| `/etc/meownetvpn/update-lists.sh` | downloads + loads subnet lists |
+| `/usr/bin/meownetvpn` | CLI |
 | LuCI app | basic web UI (enable, server, lists, status) |
 
 ## License

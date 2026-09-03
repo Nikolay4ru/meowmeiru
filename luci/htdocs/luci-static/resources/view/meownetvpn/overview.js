@@ -2,7 +2,7 @@
 'require view';
 'require uci';
 'require poll';
-'require mierukop.lib as lib';
+'require meownetvpn.lib as lib';
 
 return lib.page({
   load: function(){ return this.loadBase(); },
@@ -129,7 +129,7 @@ return lib.page({
     ]);
 
     // seed the active server's cached ping
-    var _act=uci.get('mierukop','settings','active_server'), _am=_act&&self.pingMap[_act];
+    var _act=uci.get('meownetvpn','settings','active_server'), _am=_act&&self.pingMap[_act];
     if(_am && _am!=='—'){ self._q.srtt.textContent=_am; self._q.srtt.className=self.pingClass(_am,'net'); }
 
     self.drawChart();

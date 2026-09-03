@@ -1,36 +1,36 @@
 #!/bin/sh
-# mierukop list updater — community lists (podkop-style) over the mieru tunnels.
+# meownetvpn list updater — community lists (podkop-style) over the mieru tunnels.
 #
 # Supports routing GROUPS: the default tunnel routes settings.community_lists into
 # the main set; each `config group` routes its own community_lists into its OWN set
-# (mierukop_<group>) so that list goes through that group's dedicated tunnel.
+# (meownetvpn_<group>) so that list goes through that group's dedicated tunnel.
 #
 # Usage: update-lists.sh [download|apply|available]
 
-CONF="mierukop"
-NFT_TABLE="inet mierukop"
-NFT_SET="mierukop_subnets"
-CACHE="/etc/mierukop/lists"
+CONF="meownetvpn"
+NFT_TABLE="inet meownetvpn"
+NFT_SET="meownetvpn_subnets"
+CACHE="/etc/meownetvpn/lists"
 dnsmasq_confdir() {
 	local d; d=$(ls -d /tmp/dnsmasq.*.d 2>/dev/null | head -1)
 	[ -n "$d" ] && [ -d "$d" ] && { echo "$d"; return; }; echo "/tmp/dnsmasq.d"
 }
-DNSMASQ_CONF="$(dnsmasq_confdir)/mierukop-domains.conf"
+DNSMASQ_CONF="$(dnsmasq_confdir)/meownetvpn-domains.conf"
 # Everything is staged OUTSIDE the conf-dir: OpenWrt passes --conf-dir with no
 # extension filter, so dnsmasq parses EVERY file in there — the old
-# "mierukop-domains.conf.new" was read as live config while it was still being
-# written (and init.d's cleanup glob mierukop*.conf never matched it either).
+# "meownetvpn-domains.conf.new" was read as live config while it was still being
+# written (and init.d's cleanup glob meownetvpn*.conf never matched it either).
 # The $$ suffix additionally keeps two concurrent runs off each other's files.
-DNSMASQ_TMP="/tmp/mierukop/domains.conf.$$"
-NFT_BATCH="/tmp/mierukop/nft.batch.$$"
-DL_FAIL="/tmp/mierukop/dl.failed.$$"
+DNSMASQ_TMP="/tmp/meownetvpn/domains.conf.$$"
+NFT_BATCH="/tmp/meownetvpn/nft.batch.$$"
+DL_FAIL="/tmp/meownetvpn/dl.failed.$$"
 REPO="https://raw.githubusercontent.com/itdoginfo/allow-domains/main"
 SOCKS_PORT="$(uci -q get $CONF.settings.socks_port || echo 1180)"
 PROXY="socks5h://127.0.0.1:${SOCKS_PORT}"
 ROUTED_DNS="$(uci -q get $CONF.settings.routed_dns || echo 8.8.8.8)"
 
 . /lib/functions.sh
-log() { logger -t mierukop-lists "$1"; }
+log() { logger -t meownetvpn-lists "$1"; }
 
 community_entries() {
 	case "$1" in
@@ -99,7 +99,7 @@ filter_megablocks() {
 	# a service prefix that belongs in the tunnel. Piped to logger via stdin —
 	# system() would run list contents (downloaded data) through the shell.
 	END { if (n) { if (n>10) list = list " ..."
-	        print "megablock filter: dropped " n " net(s) broader than /" min ":" list | "logger -t mierukop-lists" } }'
+	        print "megablock filter: dropped " n " net(s) broader than /" min ":" list | "logger -t meownetvpn-lists" } }'
 }
 dnsmasq_full() { dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'nftset'; }
 
@@ -116,7 +116,7 @@ tunnels() {
 		i=$((i+1)); echo "$i|group|$g"
 	done
 }
-t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "mierukop_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
+t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "meownetvpn_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
 t_lists() { [ "$1" = default ] && uci -q get $CONF.settings.community_lists || uci -q get $CONF.$2.community_lists; }
 t_domains() { [ "$1" = default ] && uci -q get $CONF.user.domain || uci -q get $CONF.$2.domain; }
 t_subnets() { [ "$1" = default ] && uci -q get $CONF.user.subnet || uci -q get $CONF.$2.subnet; }
@@ -133,7 +133,7 @@ download_name() {
 	local name="$1" kind path out tmp
 	community_entries "$name" | while IFS=: read -r kind path; do
 		[ -n "$path" ] || continue
-		out="$CACHE/${name}.${kind}.lst"; tmp="/tmp/mierukop/dl.$$"
+		out="$CACHE/${name}.${kind}.lst"; tmp="/tmp/meownetvpn/dl.$$"
 		if dl "$REPO/$path" "$tmp" && [ -s "$tmp" ]; then
 			# $CACHE is overlay flash — rewrite only when content actually changed
 			if cmp -s "$tmp" "$out" 2>/dev/null; then rm -f "$tmp"
@@ -196,7 +196,7 @@ emit_tunnel_domains() {  # setname names kind g  (stdout)
 	# not prevent that: it strips AAAA from the client reply, while nftsets are
 	# filled from the raw upstream answer. Listing a v6 twin set is not the
 	# answer either — that makes dnsmasq fail on every A record instead.
-	ns="4#inet#mierukop#$setname"
+	ns="4#inet#meownetvpn#$setname"
 	for name in $names; do
 		f="$CACHE/$name.domain.lst"; [ -f "$f" ] || continue
 		awk -v dns="$ROUTED_DNS" -v ns="$ns" \
@@ -212,11 +212,11 @@ emit_tunnel_domains() {  # setname names kind g  (stdout)
 # sharing the batch file truncate each other mid-write: the loser then loads a
 # file whose `flush set` lines have lost their `add element` lines, i.e. every
 # routed address vanishes until the next apply.
-LOCK_F="/tmp/mierukop/apply.lock"
-LOCK_D="/tmp/mierukop/apply.lock.d"
+LOCK_F="/tmp/meownetvpn/apply.lock"
+LOCK_D="/tmp/meownetvpn/apply.lock.d"
 lock_held=""
 lock_acquire() {
-	mkdir -p /tmp/mierukop 2>/dev/null
+	mkdir -p /tmp/meownetvpn 2>/dev/null
 	local i=0
 	# NOT `flock -w SECS`: /usr/bin/flock here is the BusyBox applet and its
 	# entire option set is -sxun. `-w` makes it print "unrecognized option: w"
@@ -248,11 +248,11 @@ lock_release() {
 }
 
 apply_all() {
-	mkdir -p "$CACHE" /tmp/mierukop
+	mkdir -p "$CACHE" /tmp/meownetvpn
 	lock_acquire || return 0
 	local line idx kind g setname names total=0 B="$NFT_BATCH" net dns i dpid dpid0
 	# leftover from the versions that staged inside the conf-dir: dnsmasq parses
-	# it as config, and init.d's rm glob (mierukop*.conf) cannot match it
+	# it as config, and init.d's rm glob (meownetvpn*.conf) cannot match it
 	rm -f "$DNSMASQ_CONF.new"
 	# rebuild sets from scratch — иначе удалённые/исключённые подсети остаются
 	# в наборах навсегда. flush+add идут ОДНОЙ nft-транзакцией: нет ни окна
@@ -264,13 +264,13 @@ apply_all() {
 		echo "flush set $NFT_TABLE $setname" >> "$B"
 		collect_tunnel_subnets "$names" "$kind" "$g" | emit_add_batch "$setname" >> "$B"
 	done
-	echo "flush set $NFT_TABLE mierukop_direct" >> "$B"
+	echo "flush set $NFT_TABLE meownetvpn_direct" >> "$B"
 	# default user exclusions → DIRECT set (bypass), routed DNS → default set.
 	# Both go through emit_add_batch so they meet the same strict validation: a
 	# hand-edited exclude_subnet, or an IPv6 routed_dns (the LuCI field accepts
 	# one, the sets are ipv4_addr), would otherwise abort the whole transaction.
 	for net in $(uci -q get $CONF.user.exclude_subnet); do echo "$net"; done \
-		| emit_add_batch mierukop_direct >> "$B"
+		| emit_add_batch meownetvpn_direct >> "$B"
 	for dns in $ROUTED_DNS; do echo "$dns/32"; done | emit_add_batch "$NFT_SET" >> "$B"
 	if ! nft -f "$B" 2>/dev/null; then
 		log "atomic set load failed: $(nft -c -f "$B" 2>&1 | head -1) — adding per-element"
@@ -284,7 +284,7 @@ apply_all() {
 			collect_tunnel_subnets "$names" "$kind" "$g" | valid_v4 | sort -u | \
 				while read -r net; do add_to "$setname" "$net"; done
 		done
-		for net in $(uci -q get $CONF.user.exclude_subnet); do add_to mierukop_direct "$net"; done
+		for net in $(uci -q get $CONF.user.exclude_subnet); do add_to meownetvpn_direct "$net"; done
 		for dns in $ROUTED_DNS; do add_to "$NFT_SET" "$dns/32"; done
 	fi
 	# domain drop-in (all tunnels) — restart dnsmasq ONLY if content changed:
@@ -313,7 +313,7 @@ apply_all() {
 		done
 		# default user exclusions → direct set
 		for d in $(uci -q get $CONF.user.exclude_domain); do
-			echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/4#inet#mierukop#mierukop_direct"
+			echo "server=/$d/$ROUTED_DNS"; echo "nftset=/$d/4#inet#meownetvpn#meownetvpn_direct"
 		done >> "$DNSMASQ_TMP"
 		total=$(grep -c '^nftset=' "$DNSMASQ_TMP" 2>/dev/null)
 		if cmp -s "$DNSMASQ_TMP" "$DNSMASQ_CONF" 2>/dev/null; then
@@ -358,7 +358,7 @@ apply_all() {
 	# '[0-9.]+/[0-9]+' matched neither and showed 49 for a set holding 106.
 	total=$(nft list set $NFT_TABLE $NFT_SET 2>/dev/null | \
 		grep -oE '([0-9]+\.){3}[0-9]+(/[0-9]+)?(-([0-9]+\.){3}[0-9]+)?' | wc -l)
-	echo "$total" > /tmp/mierukop/subnets.count
+	echo "$total" > /tmp/meownetvpn/subnets.count
 	# The rebuild above dropped every IP dnsmasq had learned from the drop-in.
 	# Those are the only route into the tunnel for blocked sites behind a CDN
 	# (Cloudflare megablocks are excluded on purpose), and a cached answer does
@@ -374,7 +374,7 @@ download_custom() {
 	config_get_bool enabled "$section" enabled 1
 	config_get url "$section" url; config_get type "$section" type subnet
 	[ "$enabled" = "1" ] && [ -n "$url" ] && [ "$type" = "subnet" ] || return 0
-	local out="$CACHE/custom_${section}.subnet.lst" tmp="/tmp/mierukop/dlc.$$"
+	local out="$CACHE/custom_${section}.subnet.lst" tmp="/tmp/meownetvpn/dlc.$$"
 	if dl "$url" "$tmp" && [ -s "$tmp" ]; then
 		cmp -s "$tmp" "$out" 2>/dev/null || cat "$tmp" > "$out"
 	fi
@@ -392,7 +392,7 @@ trap 'exit 130' INT TERM
 
 case "${1:-apply}" in
 	download)
-		mkdir -p "$CACHE" /tmp/mierukop
+		mkdir -p "$CACHE" /tmp/meownetvpn
 		rm -f "$DL_FAIL"
 		for name in $(all_names); do download_name "$name"; done
 		# Stamp the run, not the files: since 1.3.2 an unchanged list is left

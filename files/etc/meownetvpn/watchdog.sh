@@ -1,5 +1,5 @@
 #!/bin/sh
-# mierukop watchdog — keep tunnels passing traffic.
+# meownetvpn watchdog — keep tunnels passing traffic.
 # Runs from cron (every 5 min). Every tunnel (default + each group) is checked
 # twice: its DATA PATH (nft set, mtunN, fwmark rule, routing table) and its
 # TRANSPORT (an HTTP probe through that tunnel's local SOCKS5).
@@ -12,22 +12,22 @@
 # second consecutive strike.
 #
 # uci knobs read here beyond settings.enabled/watchdog/socks_port/failover:
-#   mierukop.<group>.probe_url    what to fetch through that group's tunnel
-#   mierukop.settings.probe_url   the same for the default tunnel, and the
+#   meownetvpn.<group>.probe_url    what to fetch through that group's tunnel
+#   meownetvpn.settings.probe_url   the same for the default tunnel, and the
 #                                 fallback for a group that names none
-#   mierukop.<server>.failover    '0' keeps that server out of automatic
+#   meownetvpn.<server>.failover    '0' keeps that server out of automatic
 #                                 rotation (see failover_pool below)
 
-CONF="mierukop"
+CONF="meownetvpn"
 [ "$(uci -q get $CONF.settings.enabled)" = "1" ] || exit 0
 [ "$(uci -q get $CONF.settings.watchdog)" = "1" ] || exit 0
 
 BASE=$(uci -q get $CONF.settings.socks_port || echo 1180)
-NFT_TABLE="inet mierukop"
-RUN_DIR="/var/run/mierukop"
-STATE_DIR="/tmp/mierukop.wd"
+NFT_TABLE="inet meownetvpn"
+RUN_DIR="/var/run/meownetvpn"
+STATE_DIR="/tmp/meownetvpn.wd"
 mkdir -p "$STATE_DIR"
-rm -f /tmp/mierukop.wdfail   # legacy single global strike file
+rm -f /tmp/meownetvpn.wdfail   # legacy single global strike file
 
 # Per-index derived names. These must stay identical to init.d's t_* helpers,
 # ARGUMENT ORDER INCLUDED (update-lists.sh carries the same copies): they address
@@ -37,7 +37,7 @@ rm -f /tmp/mierukop.wdfail   # legacy single global strike file
 t_tun()   { echo "mtun$1"; }
 t_mark()  { printf '0x%x' $(( 0x1042 + $1 )); }
 t_table() { echo $(( 1042 + $1 )); }
-t_set()   { [ "$2" = default ] && echo "mierukop_subnets" || echo "mierukop_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
+t_set()   { [ "$2" = default ] && echo "meownetvpn_subnets" || echo "meownetvpn_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
 
 # Self-heal the domain drop-in: dnsmasq is what puts resolved addresses into the
 # sets, so once the drop-in is gone every domain-only list stops being routed.
@@ -45,16 +45,16 @@ t_set()   { [ "$2" = default ] && echo "mierukop_subnets" || echo "mierukop_$(pr
 # configs and would flush/reapply every 5 minutes. A missing SET is deliberately
 # not handled here — `apply` flushes and refills sets, it never creates them, so
 # re-applying could never have repaired that; path_fault() below catches it.
-DCONF=$(ls /tmp/dnsmasq.*.d/mierukop-domains.conf /tmp/dnsmasq.d/mierukop-domains.conf 2>/dev/null | head -1)
+DCONF=$(ls /tmp/dnsmasq.*.d/meownetvpn-domains.conf /tmp/dnsmasq.d/meownetvpn-domains.conf 2>/dev/null | head -1)
 if [ ! -s "$DCONF" ]; then
-	logger -t mierukop-wd "domain drop-in missing — reapplying lists"
-	/etc/mierukop/update-lists.sh apply >/dev/null 2>&1
+	logger -t meownetvpn-wd "domain drop-in missing — reapplying lists"
+	/etc/meownetvpn/update-lists.sh apply >/dev/null 2>&1
 fi
 
 # Probe target, most specific first. A group exists to carry ONE service, and
 # gstatic answering through its SOCKS port says nothing about whether that
 # service is reachable over it — point the group at something it actually routes:
-#   uci set mierukop.gYouTube.probe_url='https://www.youtube.com/generate_204'
+#   uci set meownetvpn.gYouTube.probe_url='https://www.youtube.com/generate_204'
 probe_url() {  # $1 = group section ("" for the default tunnel)
 	local u=""
 	[ -n "$1" ] && u=$(uci -q get "$CONF.$1.probe_url")
@@ -107,7 +107,7 @@ clock_resync() {
 		drift=$(( after - before - waited ))
 		[ "$drift" -lt 0 ] && drift=$(( 0 - drift ))
 		if [ "$drift" -gt "$CLOCK_TOLERANCE" ]; then
-			logger -t mierukop-wd "clock was ${drift}s out — corrected from $ip, restarting tunnels"
+			logger -t meownetvpn-wd "clock was ${drift}s out — corrected from $ip, restarting tunnels"
 			return 0
 		fi
 		# A server that answered and still left the clock alone settles the question:
@@ -149,9 +149,14 @@ reload_throttled() {
 	echo "$now" > "$RELOAD_STAMP"
 }
 
-mieru_pid() {  # $1 = socks port -> pid of the mieru listening on it
+# Whatever is answering on this tunnel's SOCKS port — mieru or xray. Matching the
+# PORT rather than a binary name is the point: the engine is a per-server choice
+# now, and a watchdog that only knows how to find `mieru` silently stops bouncing
+# anything the moment a tunnel is switched to vless. It would still log strikes,
+# still fail probes, and never restart the process that was actually stuck.
+engine_pid() {  # $1 = socks port -> pid listening on it, and its name
 	netstat -lntp 2>/dev/null | awk -v p="127.0.0.1:$1" '
-		$4 == p && $NF ~ /mieru/ { n = split($NF, a, "/"); print a[1]; exit }'
+		$4 == p && $NF ~ /(mieru|xray)/ { n = split($NF, a, "/"); print a[1]" "a[2]; exit }'
 }
 hev_pid() {  # $1 = hev config file -> pid of the tun2socks instance holding it
 	# Matched on the exact "<binary> <config>" tail. `pgrep -f` looked simpler but
@@ -161,12 +166,13 @@ hev_pid() {  # $1 = hev config file -> pid of the tun2socks instance holding it
 }
 
 bounce() {  # $1 = socks port, $2 = label — restart ONE tunnel, nothing else
-	local pid; pid=$(mieru_pid "$1")
+	local ep pid name
+	ep=$(engine_pid "$1"); pid=${ep%% *}; name=${ep##* }
 	if [ -n "$pid" ]; then
 		kill "$pid" 2>/dev/null
-		logger -t mierukop-wd "$2: bounced mieru pid $pid (procd respawns in ~5s)"
+		logger -t meownetvpn-wd "$2: bounced $name pid $pid (procd respawns in ~5s)"
 	else
-		logger -t mierukop-wd "$2: no mieru on socks $1 — procd already respawning"
+		logger -t meownetvpn-wd "$2: nothing listening on socks $1 — procd already respawning"
 	fi
 }
 
@@ -192,12 +198,12 @@ repair_path() {  # $1 = idx, $2 = kind, $3 = group, $4 = label
 		# sees the same thing and escalates on its own. Letting the group do it also
 		# burned the hourly reload token before the default tunnel could use it.
 		if [ "$2" != default ]; then
-			logger -t mierukop-wd "$4: set $sn is gone — so is the ruleset; the default tunnel rebuilds it"
+			logger -t meownetvpn-wd "$4: set $sn is gone — so is the ruleset; the default tunnel rebuilds it"
 		elif reload_throttled; then
-			logger -t mierukop-wd "$4: set $sn is gone — reloading to rebuild the ruleset"
-			/etc/init.d/mierukop reload >/dev/null 2>&1
+			logger -t meownetvpn-wd "$4: set $sn is gone — reloading to rebuild the ruleset"
+			/etc/init.d/meownetvpn reload >/dev/null 2>&1
 		else
-			logger -t mierukop-wd "$4: set $sn is gone and a reload was already tried this hour — not retrying"
+			logger -t meownetvpn-wd "$4: set $sn is gone and a reload was already tried this hour — not retrying"
 		fi
 		return
 	fi
@@ -205,17 +211,17 @@ repair_path() {  # $1 = idx, $2 = kind, $3 = group, $4 = label
 		pid=$(hev_pid "$hev")
 		if [ -n "$pid" ]; then
 			kill "$pid" 2>/dev/null
-			logger -t mierukop-wd "$4: $tun is gone — bounced hev pid $pid (procd respawns in ~5s)"
+			logger -t meownetvpn-wd "$4: $tun is gone — bounced hev pid $pid (procd respawns in ~5s)"
 		else
-			logger -t mierukop-wd "$4: $tun is gone and no hev running — procd already respawning"
+			logger -t meownetvpn-wd "$4: $tun is gone and no hev running — procd already respawning"
 		fi
 		return
 	fi
 	if [ -s "$up" ]; then
 		sh "$up" "$tun" >/dev/null 2>&1
-		logger -t mierukop-wd "$4: re-ran $up — fwmark rule and routing table restored"
+		logger -t meownetvpn-wd "$4: re-ran $up — fwmark rule and routing table restored"
 	else
-		logger -t mierukop-wd "$4: routing broken and $up is missing — reload needed"
+		logger -t meownetvpn-wd "$4: routing broken and $up is missing — reload needed"
 	fi
 }
 
@@ -268,7 +274,7 @@ group_has_server() {  # $1 = group section
 # very network it exists to get out of. No country is hardcoded — the operator
 # marks the servers that are not usable exits. An excluded server can still be
 # selected by hand via settings.active_server; this governs only the automatic
-# paths, and `mierukop best-server` filters on the same flag.
+# paths, and `meownetvpn best-server` filters on the same flag.
 failover_pool() {
 	uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=server\$/\1/p" \
 		| while read -r s; do
@@ -301,21 +307,23 @@ deffail=0
 defpath=$(path_fault 0 default "")
 if [ -n "$defpath" ]; then
 	deffail=$(strike default)
-	logger -t mierukop-wd "default tunnel data path broken: $defpath, strike $deffail/2"
+	logger -t meownetvpn-wd "default tunnel data path broken: $defpath, strike $deffail/2"
 elif ok "$(probe "$BASE" "$(probe_url "")")"; then
 	clear_strike default
 	rm -f "$ROT_STAMP"   # the streak is over; opted-out exits go back off the table
 else
-	# Before blaming the exit: a clock that drifted breaks every handshake mieru
-	# makes, and no amount of failover repairs that. Check it first, and only fall
-	# through to the server-level escalation once the time is known to be right.
+	# Before blaming the exit: a clock that drifted breaks every handshake, and no
+	# amount of failover repairs that. It bites both engines for different reasons —
+	# mieru derives session keys from the wall clock, and a TLS certificate is
+	# rejected as not-yet-valid or expired — so the check belongs here, ahead of any
+	# server-level escalation, whichever engine this tunnel runs.
 	if clock_resync; then
-		/etc/init.d/mierukop restart >/dev/null 2>&1
+		/etc/init.d/meownetvpn restart >/dev/null 2>&1
 		clear_strike default
 		exit 0
 	fi
 	deffail=$(strike default)
-	logger -t mierukop-wd "default tunnel (socks $BASE) probe failed, strike $deffail/2"
+	logger -t meownetvpn-wd "default tunnel (socks $BASE) probe failed, strike $deffail/2"
 fi
 
 # ---- group tunnels: isolated, never restart the service -------------------
@@ -327,20 +335,20 @@ for g in $(uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=group\$/\
 	# probed on another tunnel's port.
 	i=$((i+1))
 	# clear, not just skip: a group that fails and only then loses its server keeps
-	# a strike file no run can ever remove again, and `mierukop health` reads that
+	# a strike file no run can ever remove again, and `meownetvpn health` reads that
 	# directory — it would show «сбои подряд» for a tunnel that is off by design.
 	group_has_server "$g" || { clear_strike "$g"; continue; }
 	port=$((BASE+i))
 	fault=$(path_fault "$i" group "$g")
 	if [ -n "$fault" ]; then
 		n=$(strike "$g")
-		logger -t mierukop-wd "group $g data path broken: $fault, strike $n"
+		logger -t meownetvpn-wd "group $g data path broken: $fault, strike $n"
 		repair_path "$i" group "$g" "group $g"
 	elif ok "$(probe "$port" "$(probe_url "$g")")"; then
 		clear_strike "$g"
 	else
 		n=$(strike "$g")
-		logger -t mierukop-wd "group $g (socks $port) probe failed, strike $n"
+		logger -t meownetvpn-wd "group $g (socks $port) probe failed, strike $n"
 		bounce "$port" "group $g"
 	fi
 done
@@ -358,7 +366,7 @@ if [ "$deffail" -lt 2 ]; then
 	if [ "${n:-1}" -lt "$FLAP_MAX" ]; then exit 0; fi
 	# bounced too often to keep blaming the local daemon — fall through to the
 	# failover below and let it move off this exit
-	logger -t mierukop-wd "default tunnel bounced $n times in ${FLAP_WINDOW}s — escalating to failover"
+	logger -t meownetvpn-wd "default tunnel bounced $n times in ${FLAP_WINDOW}s — escalating to failover"
 	rm -f "$STATE_DIR/flaps"
 fi
 
@@ -374,7 +382,7 @@ if [ "$rot" -ge "$cnt" ]; then
 	if [ -n "$extra" ]; then
 		servers="$servers $extra"
 		cnt=$(echo $servers | wc -w)
-		logger -t mierukop-wd "every preferred exit failed ($rot rotations) — falling back to opted-out exits"
+		logger -t meownetvpn-wd "every preferred exit failed ($rot rotations) — falling back to opted-out exits"
 	fi
 fi
 # Rotate only when the EXIT is what failed. A broken data path is the router's
@@ -390,10 +398,10 @@ if [ -z "$defpath" ] && [ "$(uci -q get $CONF.settings.failover)" != "0" ] && [ 
 	[ -n "$next" ] || next=$(echo $servers | awk '{print $1}')
 	uci set $CONF.settings.active_server="$next"; uci commit $CONF
 	echo $(( rot + 1 )) > "$ROT_STAMP"
-	logger -t mierukop-wd "failover: $cur -> $next, restarting"
+	logger -t meownetvpn-wd "failover: $cur -> $next, restarting"
 else
-	logger -t mierukop-wd "default tunnel down twice — restarting mierukop"
+	logger -t meownetvpn-wd "default tunnel down twice — restarting meownetvpn"
 fi
-/etc/init.d/mierukop restart
+/etc/init.d/meownetvpn restart
 clear_strike default
 rm -f "$STATE_DIR/flaps"

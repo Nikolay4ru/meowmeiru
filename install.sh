@@ -1,21 +1,21 @@
 #!/bin/sh
-# mierukop installer — one-liner for OpenWrt
+# meownetvpn installer — one-liner for OpenWrt
 #
 #   sh <(wget -qO- https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main/install.sh)
 #   # or, if github is blocked on the box, via your mirror:
-#   MIERUKOP_MIRROR="https://router.koleso.app/mierukop" sh <(wget -qO- .../install.sh)
+#   MEOWNETVPN_MIRROR="https://router.koleso.app/meownetvpn" sh <(wget -qO- .../install.sh)
 #
-# Installs: mieru (socks5 transport) + hev-socks5-tunnel (tun2socks) + mierukop files,
+# Installs: mieru (socks5 transport) + hev-socks5-tunnel (tun2socks) + meownetvpn files,
 # then sets up policy routing of selected traffic through the mieru tunnel.
 
 set -e
-REPO="${MIERUKOP_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main}"
-MIRROR="${MIERUKOP_MIRROR:-}"          # optional fallback base (e.g. https://router.koleso.app/mierukop)
+REPO="${MEOWNETVPN_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main}"
+MIRROR="${MEOWNETVPN_MIRROR:-}"          # optional fallback base (e.g. https://router.koleso.app/meownetvpn)
 MIERU_VER="${MIERU_VER:-3.18.0}"
 HEV_VER="${HEV_VER:-2.7.5}"
 
-say() { echo "[mierukop] $1"; }
-err() { echo "[mierukop] ERROR: $1" >&2; exit 1; }
+say() { echo "[meownetvpn] $1"; }
+err() { echo "[meownetvpn] ERROR: $1" >&2; exit 1; }
 
 [ -f /etc/openwrt_release ] || err "not an OpenWrt system"
 command -v uci >/dev/null || err "uci not found"
@@ -32,10 +32,93 @@ case "$ARCH" in
 esac
 say "arch: $ARCH → mieru/$MARCH, hev/$HARCH"
 
-dl() { # dl <url> <out>
-	if command -v curl >/dev/null; then curl -fsSL --max-time 120 -o "$2" "$1"
-	else wget -qO "$2" "$1"; fi
+# ── migration: mierukop → meownetvpn ─────────────────────────────────────────
+# The project was renamed and eight routers were already running the old name.
+# Everything the operator configured lives in the uci file, so the migration is
+# really "move that file and delete the old skin" — but the old skin is not
+# inert: its init script, its cron lines, its nft table and its dnsmasq drop-in
+# keep running until removed, and two services fighting over one fwmark and one
+# tun device is worse than either alone. The old service is therefore stopped
+# FIRST, before anything else is touched.
+#
+# The name is meownetvpn, not meownetvpn, and that is not cosmetic. This firmware
+# ALREADY ships a LuCI app called meownet — /etc/config/meownet, its menu.d and
+# acl.d entries, and /www/luci-static/resources/view/meownetvpn — which is the
+# router's own management panel (wizard, dashboard, wifi, mesh). Installing under
+# the bare name overwrites the vendor's menu and config: the panel's pages stay on
+# disk and become unreachable, and its settings are replaced. Learned by doing it.
+mn_purge_old() {  # $1 = old name to remove
+	local n="$1"
+	[ -x "/etc/init.d/$n" ] && { /etc/init.d/$n stop >/dev/null 2>&1 || true; /etc/init.d/$n disable >/dev/null 2>&1 || true; }
+	sed -i "/$n/d" /etc/crontabs/root 2>/dev/null || true
+	nft delete table "inet $n" 2>/dev/null || true
+	rm -f /tmp/dnsmasq.d/$n*.conf /tmp/dnsmasq.*.d/$n*.conf 2>/dev/null || true
+	rm -f "/etc/init.d/$n" "/usr/bin/$n" 2>/dev/null || true
+	rm -rf "/etc/$n" "/var/run/$n" "/tmp/$n" "/tmp/$n.wd" 2>/dev/null || true
+	rm -f /etc/rc.d/*"$n" 2>/dev/null || true
+	rm -f "/usr/lib/opkg/info/$n.control" 2>/dev/null || true
 }
+# Undo an earlier install that took the vendor's name. Removing OUR overlay copy
+# is what brings the firmware's own file back into view; deleting the merged path
+# instead would create a whiteout and hide the vendor file for good.
+mn_restore_vendor() {  # $1 = path under /
+	local up="/overlay/upper$1"
+	[ -e "/rom$1" ] || return 0
+	[ -e "$up" ] || return 0
+	rm -rf "$up" 2>/dev/null || true
+	say "restored the firmware's own $1"
+}
+
+if [ -f /etc/config/meownet ] && grep -qE "^config[[:space:]]+(mierukop|meownetvpn)[[:space:]]+'settings'" /etc/config/meownet 2>/dev/null; then
+	# A previous run of this installer put OUR config where the vendor's lives.
+	say "repairing an earlier install that used the vendor's 'meownetvpn' name…"
+	[ -f /etc/config/meownetvpn ] || cp /etc/config/meownet /etc/config/meownetvpn
+	mn_purge_old meownetvpn
+	rm -f /etc/config/meownet
+	mn_restore_vendor /etc/config/meownet
+	mn_restore_vendor /usr/share/luci/menu.d/luci-app-meownet.json
+	mn_restore_vendor /usr/share/rpcd/acl.d/luci-app-meownet.json
+	for v in overview servers routing diagnostics settings; do
+		rm -f "/www/luci-static/resources/view/meownet/$v.js"
+	done
+	rm -rf /www/luci-static/resources/meownet 2>/dev/null || true
+	rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null || true
+fi
+
+if [ -f /etc/config/mierukop ] && [ ! -f /etc/config/meownetvpn ]; then
+	say "migrating mierukop → meownetvpn (settings are preserved)…"
+	cp /etc/config/mierukop /root/mierukop.config.bak 2>/dev/null || true
+	mv /etc/config/mierukop /etc/config/meownetvpn
+	# Carry the DOWNLOADED lists across before the old tree is deleted. They are not
+	# config, so it is tempting to let update-lists.sh fetch them again — but that
+	# fetch goes THROUGH the tunnel, and until it lands the nft sets hold nothing,
+	# which means nothing is routed into the tunnel at all. The service comes up
+	# looking healthy (the probe talks to SOCKS directly and passes) while every
+	# client is quietly on the open WAN. Observed exactly that: "1 subnets in
+	# default set" after a migration that otherwise reported success.
+	if [ -d /etc/mierukop/lists ]; then
+		mkdir -p /etc/meownetvpn/lists
+		for l in /etc/mierukop/lists/*.lst; do
+			[ -e "$l" ] || continue
+			cp "$l" /etc/meownetvpn/lists/ 2>/dev/null || true
+		done
+		say "carried over $(ls /etc/meownetvpn/lists/*.lst 2>/dev/null | wc -l) list file(s)"
+	fi
+	mn_purge_old mierukop
+	rm -rf /www/luci-static/resources/mierukop /www/luci-static/resources/view/mierukop 2>/dev/null || true
+	rm -f /usr/share/luci/menu.d/luci-app-mierukop.json /usr/share/rpcd/acl.d/luci-app-mierukop.json 2>/dev/null || true
+	say "migrated; a copy of the old config is at /root/mierukop.config.bak"
+elif [ -f /etc/config/mierukop ] && [ -f /etc/config/meownetvpn ]; then
+	say "WARNING: both /etc/config/mierukop and /etc/config/meownetvpn exist — leaving both alone."
+	say "         remove the stale one by hand, then re-run; two services on one fwmark fight."
+fi
+# The section TYPE is part of the rename too. Nothing reads it (every lookup is
+# by section NAME), so a stale `config mierukop 'settings'` is harmless — but it
+# is also the first thing anyone sees in the file, and a config that still names
+# the old project reads as a migration that did not finish.
+if [ -f /etc/config/meownetvpn ]; then
+	sed -i "s/^config[[:space:]]\+mierukop[[:space:]]\+'settings'/config meownetvpn 'settings'/; s/^config[[:space:]]\+meownetvpn[[:space:]]\+'settings'/config meownetvpn 'settings'/" /etc/config/meownetvpn 2>/dev/null || true
+fi
 
 # ── dependencies ──
 say "installing deps (nftables, dnsmasq-full, kmod-tun, ca-bundle, curl)…"
@@ -48,11 +131,11 @@ if dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'no-nftset'; then
 	echo "nameserver 8.8.8.8" > /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null || true
 	opkg update >/dev/null 2>&1 || true
 	opkg install dnsmasq-full --download-only --force-overwrite >/dev/null 2>&1 || true
-	cp /etc/config/dhcp /etc/config/dhcp.mierukop.bak 2>/dev/null
+	cp /etc/config/dhcp /etc/config/dhcp.meownetvpn.bak 2>/dev/null
 	opkg remove dnsmasq >/dev/null 2>&1
 	opkg install dnsmasq-full --force-overwrite >/dev/null 2>&1 || \
 		opkg install dnsmasq --force-overwrite >/dev/null 2>&1
-	[ -s /etc/config/dhcp ] || cp /etc/config/dhcp.mierukop.bak /etc/config/dhcp 2>/dev/null
+	[ -s /etc/config/dhcp ] || cp /etc/config/dhcp.meownetvpn.bak /etc/config/dhcp 2>/dev/null
 	/etc/init.d/dnsmasq enable >/dev/null 2>&1
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 fi
@@ -90,7 +173,7 @@ get_bin() { # get_bin <name> <primary-url> <dest> <arch>
 	if [ -n "$MIRROR" ] && dl "$MIRROR/bin/$name" "$dest" 2>/dev/null && [ -s "$dest" ]; then
 		verify_sha "$dest" "$name" "$arch"; chmod +x "$dest"; return 0
 	fi
-	err "could not fetch $name (set MIERUKOP_MIRROR to a reachable host that serves /bin/$name)"
+	err "could not fetch $name (set MEOWNETVPN_MIRROR to a reachable host that serves /bin/$name)"
 }
 
 if ! command -v mieru >/dev/null; then
@@ -103,7 +186,7 @@ get_bin hev-socks5-tunnel \
 	/usr/bin/hev-socks5-tunnel "$HARCH"
 
 # ── package files ──
-say "installing mierukop files…"
+say "installing meownetvpn files…"
 fetch_file() { # fetch_file <repo-path> <dest> <mode>
 	local p="$1" d="$2" m="$3"
 	mkdir -p "$(dirname "$d")"
@@ -112,12 +195,12 @@ fetch_file() { # fetch_file <repo-path> <dest> <mode>
 	[ -n "$m" ] && chmod "$m" "$d"
 }
 # keep existing config on upgrade
-[ -f /etc/config/mierukop ] || fetch_file etc/config/mierukop /etc/config/mierukop 644
-fetch_file etc/init.d/mierukop         /etc/init.d/mierukop          755
-fetch_file etc/mierukop/update-lists.sh /etc/mierukop/update-lists.sh 755
-fetch_file etc/mierukop/watchdog.sh    /etc/mierukop/watchdog.sh     755
-fetch_file usr/bin/mierukop            /usr/bin/mierukop             755
-ln -sf /usr/bin/mierukop /usr/bin/meowmieru   # meowMieru brand alias
+[ -f /etc/config/meownetvpn ] || fetch_file etc/config/meownetvpn /etc/config/meownetvpn 644
+fetch_file etc/init.d/meownetvpn         /etc/init.d/meownetvpn          755
+fetch_file etc/meownetvpn/update-lists.sh /etc/meownetvpn/update-lists.sh 755
+fetch_file etc/meownetvpn/watchdog.sh    /etc/meownetvpn/watchdog.sh     755
+fetch_file usr/bin/meownetvpn            /usr/bin/meownetvpn             755
+ln -sf /usr/bin/meownetvpn /usr/bin/meowmieru   # meowMieru brand alias
 
 # LuCI app (multi-page): shared lib + per-tab views + menu + acl
 fetch_repo() { # fetch_repo <repo-path> <dest> <mode>
@@ -127,43 +210,43 @@ fetch_repo() { # fetch_repo <repo-path> <dest> <mode>
 	[ -n "$m" ] && chmod "$m" "$d"
 }
 LV=/www/luci-static/resources
-fetch_repo luci/htdocs/luci-static/resources/mierukop/lib.js  "$LV/mierukop/lib.js"  644
+fetch_repo luci/htdocs/luci-static/resources/meownetvpn/lib.js  "$LV/meownetvpn/lib.js"  644
 for v in overview servers routing diagnostics settings; do
-	fetch_repo "luci/htdocs/luci-static/resources/view/mierukop/$v.js" "$LV/view/mierukop/$v.js" 644
+	fetch_repo "luci/htdocs/luci-static/resources/view/meownetvpn/$v.js" "$LV/view/meownetvpn/$v.js" 644
 done
-rm -f "$LV/view/mierukop/main.js"   # legacy single-page view (replaced by tabs)
-fetch_repo luci/root/usr/share/luci/menu.d/luci-app-mierukop.json   /usr/share/luci/menu.d/luci-app-mierukop.json   644
-fetch_repo luci/root/usr/share/rpcd/acl.d/luci-app-mierukop.json    /usr/share/rpcd/acl.d/luci-app-mierukop.json    644
+rm -f "$LV/view/meownetvpn/main.js"   # legacy single-page view (replaced by tabs)
+fetch_repo luci/root/usr/share/luci/menu.d/luci-app-meownetvpn.json   /usr/share/luci/menu.d/luci-app-meownetvpn.json   644
+fetch_repo luci/root/usr/share/rpcd/acl.d/luci-app-meownetvpn.json    /usr/share/rpcd/acl.d/luci-app-meownetvpn.json    644
 # module version file (used by update-check / self-update)
-dl "$REPO/VERSION" /etc/mierukop/VERSION 2>/dev/null || echo "1.1.0" > /etc/mierukop/VERSION
-mkdir -p /etc/mierukop/lists
+dl "$REPO/VERSION" /etc/meownetvpn/VERSION 2>/dev/null || echo "1.1.0" > /etc/meownetvpn/VERSION
+mkdir -p /etc/meownetvpn/lists
 
 # ── register with opkg so it shows in the LuCI package manager (removable/upgradeable) ──
 say "registering package with opkg…"
-PKG_VER="$(cat /etc/mierukop/VERSION 2>/dev/null || echo 1.1.0)"
+PKG_VER="$(cat /etc/meownetvpn/VERSION 2>/dev/null || echo 1.1.0)"
 INFO=/usr/lib/opkg/info; STATUS=/usr/lib/opkg/status; mkdir -p "$INFO"
-PKG_FILES="/etc/config/mierukop /etc/init.d/mierukop /etc/mierukop/update-lists.sh \
-/etc/mierukop/watchdog.sh /usr/bin/mierukop \
-/www/luci-static/resources/mierukop/lib.js \
-/www/luci-static/resources/view/mierukop/overview.js \
-/www/luci-static/resources/view/mierukop/servers.js \
-/www/luci-static/resources/view/mierukop/routing.js \
-/www/luci-static/resources/view/mierukop/diagnostics.js \
-/www/luci-static/resources/view/mierukop/settings.js \
-/usr/share/luci/menu.d/luci-app-mierukop.json /usr/share/rpcd/acl.d/luci-app-mierukop.json"
-: > "$INFO/mierukop.list"; PKG_SZ=0
-for f in $PKG_FILES; do [ -e "$f" ] && { echo "$f" >> "$INFO/mierukop.list"; PKG_SZ=$((PKG_SZ+$(wc -c <"$f"))); }; done
-echo "/etc/config/mierukop" > "$INFO/mierukop.conffiles"
+PKG_FILES="/etc/config/meownetvpn /etc/init.d/meownetvpn /etc/meownetvpn/update-lists.sh \
+/etc/meownetvpn/watchdog.sh /usr/bin/meownetvpn \
+/www/luci-static/resources/meownetvpn/lib.js \
+/www/luci-static/resources/view/meownetvpn/overview.js \
+/www/luci-static/resources/view/meownetvpn/servers.js \
+/www/luci-static/resources/view/meownetvpn/routing.js \
+/www/luci-static/resources/view/meownetvpn/diagnostics.js \
+/www/luci-static/resources/view/meownetvpn/settings.js \
+/usr/share/luci/menu.d/luci-app-meownetvpn.json /usr/share/rpcd/acl.d/luci-app-meownetvpn.json"
+: > "$INFO/meownetvpn.list"; PKG_SZ=0
+for f in $PKG_FILES; do [ -e "$f" ] && { echo "$f" >> "$INFO/meownetvpn.list"; PKG_SZ=$((PKG_SZ+$(wc -c <"$f"))); }; done
+echo "/etc/config/meownetvpn" > "$INFO/meownetvpn.conffiles"
 # stop + tear down cleanly when removed via the package manager
-cat > "$INFO/mierukop.prerm" <<'PRERM'
+cat > "$INFO/meownetvpn.prerm" <<'PRERM'
 #!/bin/sh
-/etc/init.d/mierukop stop 2>/dev/null
-/etc/init.d/mierukop disable 2>/dev/null
+/etc/init.d/meownetvpn stop 2>/dev/null
+/etc/init.d/meownetvpn disable 2>/dev/null
 exit 0
 PRERM
-chmod +x "$INFO/mierukop.prerm"
-cat > "$INFO/mierukop.control" <<CTL
-Package: mierukop
+chmod +x "$INFO/meownetvpn.prerm"
+cat > "$INFO/meownetvpn.control" <<CTL
+Package: meownetvpn
 Version: $PKG_VER
 Depends: nftables, dnsmasq-full, kmod-tun, ip-full, curl, ca-bundle
 Section: net
@@ -171,11 +254,11 @@ Architecture: all
 Installed-Size: $PKG_SZ
 Description: Selective routing over a mieru SOCKS5 tunnel (podkop-style) with LuCI app
 CTL
-if grep -q "^Package: mierukop\$" "$STATUS" 2>/dev/null; then
-	awk 'BEGIN{RS="";ORS="\n\n"} !/^Package: mierukop\n/' "$STATUS" > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+if grep -q "^Package: meownetvpn\$" "$STATUS" 2>/dev/null; then
+	awk 'BEGIN{RS="";ORS="\n\n"} !/^Package: meownetvpn\n/' "$STATUS" > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
 fi
 cat >> "$STATUS" <<STAT
-Package: mierukop
+Package: meownetvpn
 Version: $PKG_VER
 Depends: nftables, dnsmasq-full, kmod-tun, ip-full, curl, ca-bundle
 Status: install user installed
@@ -215,25 +298,25 @@ fi
 
 # ── cron: refresh lists daily ──
 CRON="/etc/crontabs/root"; touch "$CRON"
-grep -q 'mierukop/update-lists.sh download' "$CRON" || \
-	echo "30 5 * * * /etc/mierukop/update-lists.sh download" >> "$CRON"
+grep -q 'meownetvpn/update-lists.sh download' "$CRON" || \
+	echo "30 5 * * * /etc/meownetvpn/update-lists.sh download" >> "$CRON"
 /etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1
 
-/etc/init.d/mierukop enable >/dev/null 2>&1
+/etc/init.d/meownetvpn enable >/dev/null 2>&1
 
 cat <<EOF
 
-[mierukop] installed.
+[meownetvpn] installed.
 
 Next:
   1) set your mieru server:
-       mierukop set-server <ip> <port> <username> <password>
+       meownetvpn set-server <ip> <port> <username> <password>
   2) start:
-       mierukop restart
+       meownetvpn restart
   3) verify:
-       mierukop status
-       mierukop test
+       meownetvpn status
+       meownetvpn test
 
 Routed by default: Telegram subnets + domains (telegram.org, t.me, telegra.ph).
-Add more:  mierukop add-domain <domain>   /   mierukop add-subnet <cidr>
+Add more:  meownetvpn add-domain <domain>   /   meownetvpn add-subnet <cidr>
 EOF

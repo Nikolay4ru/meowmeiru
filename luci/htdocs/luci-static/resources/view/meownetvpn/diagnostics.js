@@ -1,7 +1,7 @@
 'use strict';
 'require view';
 'require poll';
-'require mierukop.lib as lib';
+'require meownetvpn.lib as lib';
 
 return lib.page({
   load: function(){ return this.loadBase(); },
