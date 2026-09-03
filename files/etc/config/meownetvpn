@@ -11,11 +11,8 @@ config meownetvpn 'settings'
 	# subscription URL (saved on import) + auto re-fetch it daily to rotate blocked IPs
 	option sub_url ''
 	option sub_auto '0'
-	# local socks5 that mieru exposes
+	# local socks5 that vless exposes
 	option socks_port '1180'
-	# mieru multiplexing level: MULTIPLEXING_OFF|LOW|MIDDLE|HIGH (provider-dependent;
-	# meownetvpn subscriptions use LOW). All servers sharing one login fail over natively.
-	option multiplexing 'MULTIPLEXING_MIDDLE'
 	# tun device + routing table/mark
 	option tun_name 'mtun0'
 	option tun_addr '198.18.0.1'
@@ -42,7 +39,7 @@ config meownetvpn 'settings'
 	#                russia_outside anime news porn geoblock block
 	option community_lists 'telegram youtube discord meta twitter'
 
-# mieru servers. Add more sections for auto-failover; `active_server` above picks
+# vless servers. Add more sections for auto-failover; `active_server` above picks
 # the live one. Configure via:  meownetvpn server add <label> <ip> <port> <user> <pass>
 config server 'main'
 	option label 'Server 1'

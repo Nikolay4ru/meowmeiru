@@ -1,5 +1,5 @@
 #!/bin/sh
-# meownetvpn CLI — manage the mieru policy-routing module
+# meownetvpn CLI — manage the VLESS/Xray policy-routing module
 CONF="meownetvpn"
 NFT_TABLE="inet meownetvpn"
 NFT_SET="meownetvpn_subnets"
@@ -44,7 +44,7 @@ dnsmasq_dropin() { ls /tmp/dnsmasq.d/meownetvpn-domains.conf /tmp/dnsmasq.*.d/me
 
 usage() {
 	cat <<EOF
-meownetvpn — policy routing over mieru (podkop-style)
+meownetvpn — policy routing over VLESS/Xray (podkop-style)
 
 Usage: meownetvpn <command>
   start | stop | restart     manage the service
@@ -73,13 +73,15 @@ Usage: meownetvpn <command>
   server add <label> <ip> <port> <user> <pass> [TCP|UDP]
   server del <name>          remove a server
   server use <name>          switch the active server
-  sub <clash-url>            import all mieru servers from a Clash subscription
-                             (one login -> mieru fails over between them natively)
+  sub <url>                  import vless servers from a subscription
+                             (Clash YAML or a base64 proxy-URI list)
+  install-xray               fetch and install the xray binary
+  drop-mieru                 remove the leftover mieru binary (~12MB)
   group list                 show routing groups (list -> specific server tunnel)
   group add <name> <server> <list>...   route given lists via a specific server
   group del <name>           remove a routing group
   group server <name> <srv>...          set which server(s) a group uses
-  set-server <ip> <port> <user> <pass>   update the active server endpoint
+  set-server <host> <port> <uuid>        update the active server endpoint
   add-domain <domain>        route a single domain through the tunnel
   add-subnet <cidr>          route a subnet through the tunnel
   count                      how many subnets are loaded
@@ -91,7 +93,7 @@ case "$1" in
 	bypass)
 		# master switch: "off" tears the bypass down completely AND survives a
 		# reboot (settings.enabled=0), so nothing on the router is routed through
-		# mieru until it is turned back on.
+		# the tunnel until it is turned back on.
 		case "$2" in
 			off)
 				uci set $CONF.settings.enabled=0; uci commit $CONF
@@ -150,7 +152,7 @@ case "$1" in
 			tun=$(t_tun "$idx"); sp=$(t_socks "$idx"); mk=$(t_mark "$idx"); stn=$(t_set "$idx" "$kind" "$g")
 			prob=""
 			[ -d "/sys/class/net/$tun" ] || prob="нет интерфейса $tun"
-			[ -z "$prob" ] && ! netstat -tln 2>/dev/null | grep -q "127.0.0.1:$sp " && prob="mieru не слушает порт $sp"
+			[ -z "$prob" ] && ! netstat -tln 2>/dev/null | grep -q "127.0.0.1:$sp " && prob="xray не слушает порт $sp"
 			[ -z "$prob" ] && ! ip rule show 2>/dev/null | grep -q "fwmark $mk" && prob="нет правила маршрутизации"
 			[ -n "$prob" ] && { emit "tun$idx" bad "$nm: $prob" "restart"; continue; }
 			code=$(curl -fs --socks5-hostname "127.0.0.1:$sp" --max-time 6 -o /dev/null -w '%{http_code}' http://www.gstatic.com/generate_204 2>/dev/null)
@@ -224,7 +226,7 @@ case "$1" in
 		;;
 	report)
 		# everything a support request needs, with credentials stripped
-		echo "=== meowMieru $VERSION ==="
+		echo "=== meownetvpn $VERSION ==="
 		echo "время:    $(date)"
 		echo "модель:   $(cat /tmp/sysinfo/model 2>/dev/null)"
 		echo "прошивка: $(grep -o 'OpenWrt [0-9.]*' /etc/openwrt_release 2>/dev/null | head -1)"
@@ -319,7 +321,7 @@ case "$1" in
 		sv=$(active_server)
 		echo "version: $VERSION"
 		echo "service: $(/etc/init.d/meownetvpn running >/dev/null 2>&1 && echo running || echo stopped)"
-		echo "mieru:   $(pgrep -f '/usr/bin/mieru' >/dev/null && echo up || echo down)"
+		echo "xray:    $(pgrep -f '/usr/bin/xray' >/dev/null && echo up || echo down)"
 		echo "tun2socks: $(pgrep -f hev-socks5-tunnel >/dev/null && echo up || echo down)"
 		echo "tun dev: $(ip -br addr show "$TUN" 2>/dev/null || echo absent)"
 		echo "server:  $(srv_get "$sv" label) ($(srv_get "$sv" address):$(srv_get "$sv" port))"
@@ -345,7 +347,7 @@ case "$1" in
 		cnt=—; [ -r "$STATE_DIR/subnets.count" ] && read -r cnt < "$STATE_DIR/subnets.count"
 		echo "version: $VERSION"
 		echo "service: $svc"
-		echo "mieru:   $(pgrep -f '/usr/bin/mieru' >/dev/null && echo up || echo down)"
+		echo "xray:    $(pgrep -f '/usr/bin/xray' >/dev/null && echo up || echo down)"
 		echo "tun2socks: $(pgrep -f hev-socks5-tunnel >/dev/null && echo up || echo down)"
 		echo "server:  $(srv_get "$sv" label) ($(srv_get "$sv" address):$(srv_get "$sv" port))"
 		echo "subnets: $cnt"
@@ -430,7 +432,7 @@ case "$1" in
 		# tunnel dies, fw4 is reloaded per tunnel and dnsmasq is restarted. So a
 		# switch has to be worth it, and it must not fight the watchdog, which
 		# writes the SAME uci key from the other direction. Unguarded, the two
-		# looped: the watchdog rotates away from a server whose mieru port is
+		# looped: the watchdog rotates away from a server whose xray port is
 		# blocked, and 15 min later the lowest ICMP time drags the tunnel right
 		# back onto it — the bypass dead most of every quarter hour.
 		WD_DIR=/tmp/meownetvpn.wd                # per-tunnel strike files (watchdog.sh)
@@ -442,7 +444,7 @@ case "$1" in
 		[ -s "$STATE_DIR/ping.cache" ] || /usr/bin/meownetvpn pingall >/dev/null 2>&1
 		cur=$(active_server)
 		# The watchdog is the authority on "does this tunnel pass traffic": while
-		# it holds a strike on the default tunnel it is bouncing mieru and may
+		# it holds a strike on the default tunnel it is bouncing xray and may
 		# failover on its next run. Two writers, two restarts — stay out.
 		[ -s "$WD_DIR/default" ] && { echo "сторож чинит основной туннель — не переключаемся"; exit 0; }
 		# active_server moved and it was not us: the watchdog failed over off
@@ -481,9 +483,9 @@ case "$1" in
 			echo "оставляем $(srv_get "$cur" label) (${curms}ms): выигрыш $(( curms - bms ))ms меньше порога ${HYST_MS}ms"
 			exit 0
 		fi
-		# ICMP says the host is up, not that mieru is reachable — a host that
+		# ICMP says the host is up, not that xray is reachable — a host that
 		# pings while its port is blackholed is exactly the DPI failure mode this
-		# module exists for. Require a completed TCP handshake to the mieru port
+		# module exists for. Require a completed TCP handshake to the xray port
 		# first: the port never speaks HTTP, so curl always ends in a timeout and
 		# only %{time_connect} tells "blocked" (0.000000) from "alive".
 		ba=$(srv_get "$bs" address); bp=$(srv_get "$bs" port); bt=$(srv_get "$bs" transport)
@@ -559,7 +561,7 @@ case "$1" in
 		else echo "status: update-available"; fi
 		;;
 	self-update)
-		echo "fetching latest meowMieru from github (via tunnel)…"
+		echo "fetching latest meownetvpn from github (via tunnel)…"
 		d=/tmp/mnup; rm -rf "$d"; mkdir -p "$d"; ok=1
 		# (file repo-path : local)
 		for pair in \
@@ -622,7 +624,7 @@ case "$1" in
 		/usr/bin/meownetvpn self-update >/dev/null 2>&1
 		;;
 	speedtest)
-		# Cloudflare's speed endpoint refuses mieru/datacenter IPs (returns 0) — use
+		# Cloudflare's speed endpoint refuses xray/datacenter IPs (returns 0) — use
 		# Google's CDN which is reliably reachable through the tunnel. Try a couple of
 		# mirrors so a single dead URL doesn't read as "0".
 		spd=""; sz=0
@@ -725,7 +727,7 @@ case "$1" in
 				# and left the bypass off from the next boot on
 				[ "$(uci -q get "$CONF.$3")" = "server" ] || { echo "no such server: $3 (meownetvpn server list)"; exit 1; }
 				# a group that keeps the name of a deleted server still gets its
-				# tunnel built, with an empty mieru server array — its traffic is
+				# tunnel built, with an empty xray server array — its traffic is
 				# marked and then black-holed instead of falling back
 				for g in $(group_list); do
 					uci -q get "$CONF.$g.server" | tr ' ' '\n' | grep -qxF "$3" && {
@@ -787,13 +789,13 @@ case "$1" in
 			*) echo "usage: meownetvpn group [list|add <name> <server> <lists...>|del <name>|server <name> <servers...>]" ;;
 		esac ;;
 	sub)
-		# import mieru servers from a Clash-format subscription (meownetvpn etc.)
+		# import xray servers from a Clash-format subscription (meownetvpn etc.)
 		url="$2"; [ -n "$url" ] || { echo "usage: meownetvpn sub <clash-subscription-url>"; exit 1; }
 		tmp="$STATE_DIR/sub.yaml"; tsv="$STATE_DIR/sub.tsv"
 		echo "fetching subscription…"
 		curl -fsSL --max-time 30 "$url" -o "$tmp" 2>/dev/null || { echo "download failed"; exit 1; }
 		# A subscription arrives in one of two shapes and both are in the wild: Clash
-		# YAML (what the mieru panel serves) and a list of proxy URIs, usually
+		# YAML (what the xray panel serves) and a list of proxy URIs, usually
 		# base64-wrapped (what VLESS panels serve). Detect it — the operator pastes a
 		# link, not a format, and guessing wrong reports "no servers found" for a
 		# subscription that is perfectly fine.
@@ -809,8 +811,8 @@ case "$1" in
 
 		# TSV columns, one row per server:
 		#   type name server port net user pass mux sni path host sec flow fp xmode
-		# `net` carries the mieru transport (TCP/UDP) or the vless stream network.
-		# `user` carries the mieru username or the vless uuid — one column, because
+		# `net` carries the xray transport (TCP/UDP) or the vless stream network.
+		# `user` carries the xray username or the vless uuid — one column, because
 		# every consumer below already branches on `type` anyway.
 		if [ "$fmt" = clash ]; then
 		awk '
@@ -834,28 +836,20 @@ case "$1" in
 		  # (a path starts with "/", a uuid is hex, a level is an enum).
 		  function d(v) { return (v == "") ? "-" : v }
 		  function emit() {
-		    if (s == "") return
-		    if (t == "mieru")
-		      print "mieru\t"d(n)"\t"s"\t"p"\t"d(tr)"\t"d(u)"\t"d(pw)"\t"d(mx)"\t-\t-\t-\t-\t-\t-\t-"
-		    else if (t == "vless") {
-		      if (sni == "") sni = s
-		      if (net == "") net = "tcp"
-		      print "vless\t"d(n)"\t"s"\t"p"\t"net"\t"d(uuid)"\t"d(alpn)"\t"d(xtra)"\t"d(sni)"\t"d(path)"\t"d(hh)"\t"d(sec)"\t"d(flow)"\t"d(fp)"\t"d(xmode)
-		    }
+		    if (s == "" || t != "vless") return
+		    if (sni == "") sni = s
+		    if (net == "") net = "tcp"
+		    print "vless\t"d(n)"\t"s"\t"p"\t"net"\t"d(uuid)"\t"d(alpn)"\t"d(xtra)"\t"d(sni)"\t"d(path)"\t"d(hh)"\t"d(sec)"\t"d(flow)"\t"d(fp)"\t"d(xmode)
 		  }
 		  /^[[:space:]]*-[[:space:]]*name:/ {
 		    emit()
 		    n=val($0)
-		    t="";s="";p="";tr="TCP";u="";pw="";mx="MULTIPLEXING_MIDDLE"
+		    t="";s="";p=""
 		    uuid="";sni="";path="";hh="";sec="";flow="";fp="";xmode="";net="";alpn="";xtra=""
 		    next }
 		  /^[[:space:]]*type:/         {t=val($0)}
 		  /^[[:space:]]*server:/       {s=val($0)}
 		  /^[[:space:]]*port:/         {p=val($0)}
-		  /^[[:space:]]*transport:/    {tr=val($0)}
-		  /^[[:space:]]*username:/     {u=val($0)}
-		  /^[[:space:]]*password:/     {pw=val($0)}
-		  /^[[:space:]]*multiplexing:/ {mx=val($0)}
 		  /^[[:space:]]*uuid:/         {uuid=val($0)}
 		  /^[[:space:]]*(servername|sni):/ {sni=val($0)}
 		  /^[[:space:]]*network:/      {net=val($0)}
@@ -924,10 +918,10 @@ case "$1" in
 		done < "$tmp"
 		fi
 		cnt=$(grep -c . "$tsv" 2>/dev/null)
-		[ "${cnt:-0}" -gt 0 ] || { echo "no mieru or vless servers found in subscription"; rm -f "$tmp" "$tsv"; exit 1; }
+		[ "${cnt:-0}" -gt 0 ] || { echo "no vless servers found in subscription"; rm -f "$tmp" "$tsv"; exit 1; }
 		# Import in place. Wiping every server section first orphaned the section
 		# NAMES that group.server and settings.active_server store: init.d then
-		# built those tunnels with an empty mieru server array, so the group's
+		# built those tunnels with an empty xray server array, so the group's
 		# traffic was marked and black-holed. A section that still carries the
 		# same endpoint therefore keeps its name.
 		find_srv() {  # $1=address $2=port -> existing server section, if any
@@ -936,16 +930,14 @@ case "$1" in
 				[ "$(srv_get "$s" address)" = "$1" ] && [ "$(srv_get "$s" port)" = "$2" ] && { echo "$s"; return; }
 			done
 		}
-		TAB=$(printf '\t'); first=""; muxset=""; keep=""; imported=0
+		TAB=$(printf '	'); first=""; keep=""; imported=0
 		# read -r: without it a backslash in a generated password is eaten before
-		# it ever reaches uci, and mieru then fails to authenticate everywhere —
+		# it ever reaches uci, and xray then fails to authenticate everywhere —
 		# indistinguishable from the DPI blocking this module fights
-		nvless=0; nmieru=0
+		nvless=0
 		# "-" is the empty marker the two parsers above agree on
 		unmark() { [ "$1" = "-" ] && echo "" || echo "$1"; }
-		# For a vless row columns 7 and 8 carry alpn and the transport `extra` blob;
-		# for a mieru row the same two carry password and multiplexing. One layout,
-		# because every consumer branches on column 1 anyway.
+		# Columns 7 and 8 carry alpn and the transport `extra` blob.
 		while IFS="$TAB" read -r styp name srv port net user pass mux sni path hh sec flow fp xmode; do
 			[ -n "$srv" ] || continue
 			name=$(unmark "$name"); net=$(unmark "$net"); user=$(unmark "$user")
@@ -994,13 +986,6 @@ case "$1" in
 				[ -n "$fp" ]    && uci set $CONF.$id.fingerprint="$fp"
 				[ -n "$xmode" ] && uci set $CONF.$id.xmode="$xmode"
 				nvless=$((nvless+1))
-			else
-				uci set $CONF.$id.type='mieru'
-				uci set $CONF.$id.transport="${net:-TCP}"
-				uci set $CONF.$id.username="$user"
-				uci set $CONF.$id.password="$pass"
-				[ -z "$muxset" ] && muxset="$mux"
-				nmieru=$((nmieru+1))
 			fi
 			keep="$keep $id"; imported=$((imported+1))
 			[ -z "$first" ] && first="$id"
@@ -1036,28 +1021,11 @@ case "$1" in
 		aprev=$(uci -q get $CONF.settings.active_server); akeep=0
 		[ -n "$aprev" ] && case " $keep " in *" $aprev "*) akeep=1 ;; esac
 		[ "$akeep" = 1 ] || uci set $CONF.settings.active_server="$first"
-		# Same reasoning as active_server just above, for the same reason: a refresh
-		# updates the SERVER LIST, it does not get to overrule a tuning decision made
-		# on this router. The subscription ships whatever level the panel happens to
-		# carry, and applying it unconditionally silently undoes a level that was
-		# measured here. Observed live: the panel ships MULTIPLEXING_LOW, which on a
-		# router fronting a SOCKS proxy measured 27.6 Mbit/s against 47.3 on HIGH —
-		# every nightly refresh would have quietly handed that loss back, and the
-		# symptom (slow, not broken) is one nobody thinks to blame a refresh for.
-		# multiplexing_pin='1' marks the decision as the operator's; without it the
-		# subscription still wins, so untuned deployments behave exactly as before.
-		if [ -n "$muxset" ]; then
-			if [ "$(uci -q get $CONF.settings.multiplexing_pin)" = "1" ]; then
-				echo "  multiplexing pinned to $(uci -q get $CONF.settings.multiplexing) — subscription's $muxset ignored"
-			else
-				uci set $CONF.settings.multiplexing="$muxset"
-			fi
-		fi
 		uci set $CONF.settings.sub_url="$url"   # remember subscription for auto-refresh
 		uci commit $CONF
 		rm -f "$tmp" "$tsv"
 		# $cnt counts TSV rows; report what actually reached uci
-		echo "imported $imported server(s): $nvless vless, $nmieru mieru; active=$(uci -q get $CONF.settings.active_server)"
+		echo "imported $imported vless server(s); active=$(uci -q get $CONF.settings.active_server)"
 		[ "$nvless" -gt 0 ] && [ ! -x /usr/bin/xray ] && \
 			echo "WARNING: vless servers imported but /usr/bin/xray is missing — run: meownetvpn install-xray"
 		echo "run: meownetvpn restart"
@@ -1099,7 +1067,7 @@ case "$1" in
 		need=$(( $(wc -c < "$tmpb") / 1024 + 512 ))
 		if [ -n "$free" ] && [ "$free" -lt "$need" ]; then
 			echo "not enough overlay space: ${free}K free, ${need}K needed"
-			echo "free some up (mieru is ${mrs:-12}MB: 'meownetvpn drop-mieru' once every server is vless)"
+			echo "free some up: 'meownetvpn drop-mieru' reclaims the ~12MB mieru occupies"
 			rm -f "$tmpb"; exit 1
 		fi
 		mv "$tmpb" /usr/bin/xray && chmod +x /usr/bin/xray
@@ -1107,28 +1075,23 @@ case "$1" in
 		echo "overlay now: $(df -h /overlay 2>/dev/null | awk 'NR==2{print $4" free"}')"
 		;;
 	drop-mieru)
-		# Reclaims the ~12 MB mieru occupies, but only once nothing depends on it —
-		# a server section still typed mieru would come up as a tunnel with no engine.
-		left=""
-		for sv in $(server_list); do
-			[ "$(uci -q get $CONF.$sv.type)" = "vless" ] || left="$left $(srv_get "$sv" label)"
-		done
-		if [ -n "$left" ]; then
-			echo "refusing: these servers still use mieru:$left"
-			echo "import a vless subscription first, or delete them"
-			exit 1
-		fi
+		# mieru is no longer a transport this module can run, so its binary is just
+		# ~12 MB of overlay nothing opens. Left behind on every router migrated from
+		# mierukop, and overlay on these boxes is ~30 MB in total — which is why
+		# install-xray points at this command when it runs out of room.
+		if [ ! -e /usr/bin/mieru ]; then echo "mieru is not installed"; exit 0; fi
+		[ -x /etc/init.d/mieru ] && /etc/init.d/mieru stop >/dev/null 2>&1
 		rm -f /usr/bin/mieru
-		rm -rf /root/.config/mieru 2>/dev/null
+		rm -rf /root/.config/mieru /var/run/meownetvpn/mieru*.json 2>/dev/null
 		echo "mieru removed; overlay: $(df -h /overlay 2>/dev/null | awk 'NR==2{print $4" free"}')"
-		echo "run: meownetvpn restart"
 		;;
 	set-server)
-		[ $# -eq 5 ] || { echo "usage: meownetvpn set-server <ip> <port> <user> <pass>"; exit 1; }
+		[ $# -eq 4 ] || { echo "usage: meownetvpn set-server <host> <port> <uuid>"; exit 1; }
 		sv=$(active_server)
-		[ -n "$sv" ] || { sv=main; uci set $CONF.$sv=server; uci set $CONF.settings.active_server=$sv; uci set $CONF.$sv.label="Server 1"; uci set $CONF.$sv.transport=TCP; }
+		[ -n "$sv" ] || { sv=main; uci set $CONF.$sv=server; uci set $CONF.settings.active_server=$sv; uci set $CONF.$sv.label="Server 1"; }
+		uci set $CONF.$sv.type='vless'
 		uci set $CONF.$sv.address="$2"; uci set $CONF.$sv.port="$3"
-		uci set $CONF.$sv.username="$4"; uci set $CONF.$sv.password="$5"
+		uci set $CONF.$sv.uuid="$4"
 		uci commit $CONF
 		echo "saved to server '$sv'; run: meownetvpn restart"
 		;;

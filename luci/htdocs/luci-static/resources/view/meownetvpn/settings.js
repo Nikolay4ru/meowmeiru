@@ -43,7 +43,7 @@ return lib.page({
     // stay off even after a later «Импортировать»
     o.depends('sub_url', /.+/); o.retain=true;
     o=s.option(form.Flag,'auto_update',_('Авто-обновление модуля'),
-      _('Раз в неделю проверять GitHub и автоматически ставить новую версию meowMieru.'));
+      _('Раз в неделю проверять GitHub и автоматически ставить новую версию meownetvpn.'));
     o=s.option(form.Value,'update_interval',_('Обновление списков (часы)'));
     o.datatype='uinteger'; o.placeholder='24';
 
@@ -59,7 +59,7 @@ return lib.page({
       var versionSection=E('div',{'class':'cbi-section'},[
         E('h3',{},_('Версия и обновление')),
         E('div',{'class':'mk-act',style:'align-items:center'},[
-          E('span',{},[_('meowMieru '), self._verEl]),
+          E('span',{},[_('meownetvpn '), self._verEl]),
           self.mkBtn('updchk','cbi-button-action',_('Проверить обновление'), function(){
             self._upd.innerHTML=' '+_('проверяю…');
             return self.exec(['update-check']).then(function(t){

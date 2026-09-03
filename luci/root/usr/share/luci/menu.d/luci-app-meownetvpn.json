@@ -1,6 +1,6 @@
 {
 	"admin/services/meownetvpn": {
-		"title": "meowMieru",
+		"title": "meownetvpn",
 		"order": 60,
 		"action": { "type": "firstchild" },
 		"depends": {

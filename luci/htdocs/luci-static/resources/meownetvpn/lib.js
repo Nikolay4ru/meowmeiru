@@ -13,7 +13,7 @@ document.addEventListener('visibilitychange', function(){
 });
 
 /*
- * Shared helpers for the meowMieru (meownetvpn) multi-page LuCI app.
+ * Shared helpers for the meownetvpn (meownetvpn) multi-page LuCI app.
  * Returned as a `baseclass` subclass (so `require` hands back the class, not an
  * auto-instantiated view) with a static `page()` that builds a view carrying all
  * these helpers. Each page does:
@@ -401,13 +401,13 @@ var Base = baseclass.extend({
     // ui-status = status + traffic rates in one CLI fork (the 5s hot path)
     return this.exec(['ui-status']).then(function(out){
       var s=self.parse(out);
-      var svc=(s.service==='running'), mieru=(s.mieru==='up'), tun=(s.tun2socks==='up');
-      var connected=svc&&mieru&&tun;
+      var svc=(s.service==='running'), xray=(s.xray==='up'), tun=(s.tun2socks==='up');
+      var connected=svc&&xray&&tun;
       if(self._v){
         var set=function(node,cls,txt){ node.className=cls; node.textContent=txt; };
         set(self._v.service, svc?'mk-up':'mk-down', svc?_('работает'):_('остановлен'));
-        set(self._v.tunnel, connected?'mk-up':(mieru?'mk-warn':'mk-down'),
-            connected?_('подключён'):(mieru?_('только mieru'):_('недоступен')));
+        set(self._v.tunnel, connected?'mk-up':(xray?'mk-warn':'mk-down'),
+            connected?_('подключён'):(xray?_('только xray'):_('недоступен')));
         self._v.server.textContent=s.server||'—';
         self._v.subnets.textContent=s.subnets||'—';
       }
@@ -427,8 +427,8 @@ var Base = baseclass.extend({
   brandBar: function(subtitle){
     this._badge=E('span',{'class':'mk-badge'},'…');
     return E('div',{style:'display:flex;align-items:center;gap:10px;margin:2px 2px 12px'},[
-      E('h2',{style:'margin:0;font-weight:700;letter-spacing:-.01em'},'meowMieru'),
-      E('span',{style:'font-size:12px;opacity:.6'}, subtitle||_('маршрутизация через mieru')),
+      E('h2',{style:'margin:0;font-weight:700;letter-spacing:-.01em'},'meownetvpn'),
+      E('span',{style:'font-size:12px;opacity:.6'}, subtitle||_('маршрутизация через xray')),
       this._badge
     ]);
   },

@@ -1,5 +1,5 @@
 #!/bin/sh /etc/rc.common
-# meownetvpn — policy routing over mieru SOCKS5 transports (podkop-style, for mieru)
+# meownetvpn — policy routing over a VLESS/Xray SOCKS5 transport (podkop-style)
 # Default tunnel routes most lists; optional `config group` sections route specific
 # lists through specific server(s) via their own tunnel (mtunN/fwmark/table/nft set).
 
@@ -15,12 +15,12 @@ RUN_DIR="/var/run/meownetvpn"
 log() { logger -t meownetvpn "$1"; }
 uci_get() { uci -q get "$CONF.settings.$1"; }
 srv_get() { uci -q get "$CONF.$1.$2"; }
-# Transport engine backing a server section. Absent means mieru: every section
-# written before VLESS support existed has no `type`, and defaulting to vless
-# would silently reinterpret a live fleet's servers as something they are not.
-srv_type() {
-	local t; t=$(uci -q get "$CONF.$1.type")
-	case "$t" in vless) echo vless ;; *) echo mieru ;; esac
+# Everything a VLESS outbound needs before Xray will carry traffic. A section
+# missing the uuid still produces a config Xray ACCEPTS: it dials, the handshake
+# is refused, and the tunnel reports itself up while carrying nothing — so the
+# check belongs here, before the tun device exists, not in the log afterwards.
+srv_usable() {
+	[ -n "$(srv_get "$1" address)" ] && [ -n "$(srv_get "$1" port)" ] && [ -n "$(srv_get "$1" uuid)" ]
 }
 grp_get() { uci -q get "$CONF.$1.$2"; }
 
@@ -67,7 +67,6 @@ t_tun()   { echo "mtun$1"; }
 t_socks() { local b; b=$(uci_get socks_port); echo $(( ${b:-1180} + $1 )); }
 t_mark()  { printf '0x%x' $(( 0x1042 + $1 )); }
 t_table() { echo $(( 1042 + $1 )); }
-t_rpc()   { echo $(( 8965 + $1 )); }
 t_addr()  { echo "198.18.$1.1"; }
 t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "meownetvpn_$(printf '%s' "$3" | tr -c 'a-zA-Z0-9_' '_')"; }
 
@@ -76,75 +75,27 @@ t_set()   { [ "$2" = default ] && echo "$NFT_SET" || echo "meownetvpn_$(printf '
 tunnel_servers() {
 	local kind="$1" g="$2" sv user pass s
 	if [ "$kind" = default ]; then
-		# pinned to the active server: mieru picks freely from whatever list it is
-		# given, so a multi-server pool can exit through an unwanted country.
+		# pinned to the active server: one Xray outbound carries one endpoint, and
+		# failover is the watchdog's job (it moves settings.active_server). Two
+		# mechanisms racing to pick an exit is how a router ends up in a country
+		# nobody chose.
 		active_server
 	else
 		# A group outlives the sections it lists (`server del`, or a subscription
 		# refresh that re-derives section ids from the address). A bare dangling name
-		# still satisfies the emptiness guard in bring_up_tunnel while _servers_json
-		# drops it for having no address — mieru then gets a profile with zero
-		# servers, hev brings the tun up anyway and the group's traffic vanishes into
-		# a SOCKS port nothing listens on while syslog says "tunnel up".
+		# would still satisfy the emptiness guard in bring_up_tunnel while carrying no
+		# endpoint — hev brings the tun up anyway and the group's traffic vanishes
+		# into a SOCKS port nothing listens on while syslog says "tunnel up".
 		for s in $(grp_get "$g" server); do
 			[ "$(uci -q get "$CONF.$s")" = "server" ] && [ -n "$(srv_get "$s" address)" ] && echo "$s"
 		done
 	fi
 }
 
-_bindings() {
-	case "$2" in
-		TCP) echo "{ \"port\": $1, \"protocol\": \"TCP\" }" ;;
-		UDP) echo "{ \"port\": $1, \"protocol\": \"UDP\" }" ;;
-		*)   echo "{ \"port\": $1, \"protocol\": \"TCP\" }, { \"port\": $1, \"protocol\": \"UDP\" }" ;;
-	esac
-}
-_servers_json() {  # args: server sections
-	local sj="" a p t s
-	for s in "$@"; do
-		a=$(srv_get "$s" address); p=$(srv_get "$s" port); t=$(srv_get "$s" transport)
-		[ -n "$a" ] && [ -n "$p" ] || continue
-		[ -n "$sj" ] && sj="$sj,"
-		sj="$sj{ \"ipAddress\": \"$a\", \"portBindings\": [ $(_bindings "$p" "$t") ] }"
-	done
-	echo "$sj"
-}
-
-write_mieru_conf_f() {  # file profile rpc socks user pass servers_json
-	local f="$1" prof="$2" rpc="$3" socks="$4" user="$5" pass="$6" sj="$7" mux lvl
-	mux=$(uci_get multiplexing); [ -n "$mux" ] || mux=MULTIPLEXING_MIDDLE
-	# WARN by default: on INFO all three mieru daemons log every connection into
-	# syslog (constant logd churn); set settings.mieru_loglevel=INFO to debug.
-	# Valid enum values are TRACE/DEBUG/INFO/WARN/ERROR/FATAL — anything else makes
-	# `mieru apply config` fail and the instance never starts.
-	lvl=$(uci_get mieru_loglevel)
-	case "$lvl" in TRACE|DEBUG|INFO|WARN|ERROR|FATAL) ;; *) lvl=WARN ;; esac
-	mkdir -p "$RUN_DIR"
-	cat > "$f" <<EOF
-{
-  "profiles": [{
-    "profileName": "$prof",
-    "user": { "name": "$user", "password": "$pass" },
-    "servers": [ $sj ],
-    "mtu": 1400,
-    "multiplexing": { "level": "$mux" }
-  }],
-  "activeProfile": "$prof",
-  "rpcPort": $rpc,
-  "socks5Port": $socks,
-  "socks5ListenLAN": false,
-  "loggingLevel": "$lvl"
-}
-EOF
-	chmod 600 "$f" 2>/dev/null
-}
-
-# One VLESS outbound behind a local SOCKS5 inbound — the same contract mieru
-# offers, so hev and the whole routing plane below are untouched by which engine
-# is running. Only the tunnel's PRIMARY server is used: Xray can carry several
-# outbounds behind a balancer, but failover here is already the watchdog's job
-# (it moves settings.active_server), and two mechanisms racing to pick an exit is
-# how a router ends up on a country nobody chose.
+# One VLESS outbound behind a local SOCKS5 inbound on 127.0.0.1 — the only
+# contract hev knows, so the whole routing plane below is untouched by what this
+# writes. Only the tunnel's PRIMARY server is used: Xray can carry several
+# outbounds behind a balancer, but failover is already the watchdog's job.
 #
 # sniffing stays OFF. It exists to recover a destination domain for Xray's own
 # routing rules, and this module has none — nftables decided what enters the
@@ -285,8 +236,8 @@ setup_nft_all() {
 		tunset="$tunset\"$tun\", "
 		sets="$sets
 	set $setname { type ipv4_addr; flags interval; auto-merge; }"
-		# udp/443 reject: QUIC through a TCP-transport mieru is UDP-over-TCP
-		# (double congestion control) — reject makes clients fall back to H2/TCP
+		# udp/443 reject: QUIC over a TCP-based transport is UDP-over-TCP (double
+		# congestion control) — reject makes clients fall back to H2/TCP
 		fwd="$fwd
 		oifname \"$tun\" tcp flags syn tcp option maxseg size set 1360
 		iifname \"$tun\" tcp flags syn tcp option maxseg size set 1360
@@ -299,7 +250,7 @@ setup_nft_all() {
 		# overwrite the group mark when an address sits in both sets
 		if [ "$kind" = default ]; then
 			defrule="		ip daddr @$setname meta mark set $mark ct mark set $mark return"
-		elif [ -n "$(_servers_json $(tunnel_servers "$kind" "$g"))" ] || [ "$(uci_get killswitch)" = "1" ]; then
+		elif srv_usable "$(tunnel_servers "$kind" "$g" | head -1)" || [ "$(uci_get killswitch)" = "1" ]; then
 			pre="$pre
 		ip daddr @$setname meta mark set $mark ct mark set $mark return"
 			out="$out
@@ -311,10 +262,10 @@ setup_nft_all() {
 			# does — and push them out of the WAN in the clear: worse than having no
 			# group at all. With the killswitch on we keep the rule instead, so the
 			# blackhole in table 104N drops that traffic rather than leaking it.
-			# The test is _servers_json, not tunnel_servers: that is the one
+			# The test is srv_usable, not tunnel_servers: that is the one
 			# bring_up_tunnel bails out on, so a section that kept its address but
-			# lost its port would otherwise be handed a marking rule and no tunnel —
-			# exactly the leak this branch exists to prevent.
+			# lost its port or uuid would otherwise be handed a marking rule and no
+			# tunnel — exactly the leak this branch exists to prevent.
 			# The set itself is still declared either way: update-lists.sh flushes
 			# every tunnel's set in one nft transaction and a missing set would abort
 			# the whole batch, emptying the sets of the tunnels that do work.
@@ -322,9 +273,9 @@ setup_nft_all() {
 		fi
 	done
 	tunset=${tunset%, }
-	# mieru's own dial to the VPS must never be marked. If a list ever covers the
+	# Xray's own dial to the VPS must never be marked. If a list ever covers the
 	# server address (hosting-provider ranges do), the packet is routed into the
-	# very tunnel it is supposed to build: hev hands it back to mieru on 127.0.0.1,
+	# very tunnel it is supposed to build: hev hands it back to Xray on 127.0.0.1,
 	# which dials the server again — the tunnel deadlocks until the list is removed.
 	# A VLESS endpoint is normally a HOSTNAME, and a hostname cannot go into an nft
 	# rule — so without resolving it here the bypass simply would not cover the very
@@ -521,12 +472,12 @@ setup_cron() {
 	/etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1
 }
 
-# bring up one tunnel's mieru + hev procd instances (called inside start_service)
+# bring up one tunnel's xray + hev procd instances (called inside start_service)
 bring_up_tunnel() {
 	local idx="$1" kind="$2" g="$3"
-	local tun socks mark table rpc addr conf xconf hev up home prof mi xi ti user pass sj first eng mset ms
+	local tun socks mark table addr xconf hev up xi ti first gml
 	tun=$(t_tun "$idx"); socks=$(t_socks "$idx"); mark=$(t_mark "$idx")
-	table=$(t_table "$idx"); rpc=$(t_rpc "$idx"); addr=$(t_addr "$idx")
+	table=$(t_table "$idx"); addr=$(t_addr "$idx")
 	# Arm the killswitch before anything can be marked, and before the bail-outs
 	# below. The fwmark rule used to be created only by hev's post-up script, so
 	# until the tun device appeared — or for ever, if this tunnel never comes up —
@@ -539,70 +490,35 @@ bring_up_tunnel() {
 		ip rule add fwmark "$mark" lookup "$table" 2>/dev/null
 	fi
 	if [ "$kind" = default ]; then
-		conf="$RUN_DIR/mieru.json"; xconf="$RUN_DIR/xray.json"
-		hev="$RUN_DIR/hev.yml"; up="$RUN_DIR/up0.sh"
-		home=/root; prof=meownetvpn; mi=mieru; xi=xray; ti=tun2socks
+		xconf="$RUN_DIR/xray.json"; hev="$RUN_DIR/hev.yml"; up="$RUN_DIR/up0.sh"
+		xi=xray; ti=tun2socks
 	else
-		conf="$RUN_DIR/mieru-$g.json"; xconf="$RUN_DIR/xray-$g.json"
-		hev="$RUN_DIR/hev-$g.yml"; up="$RUN_DIR/up-$g.sh"
-		home="$RUN_DIR/h$idx"; prof="mn_$g"; mi="mieru-$g"; xi="xray-$g"; ti="tun2socks-$g"; mkdir -p "$home"
+		xconf="$RUN_DIR/xray-$g.json"; hev="$RUN_DIR/hev-$g.yml"; up="$RUN_DIR/up-$g.sh"
+		xi="xray-$g"; ti="tun2socks-$g"
 	fi
 	first=$(tunnel_servers "$kind" "$g" | head -1)
 	[ -n "$first" ] || { log "tunnel $idx ($kind $g): no servers, skip"; return 1; }
-	eng=$(srv_type "$first")
 
-	# hev is identical either way: it only ever talks to a SOCKS5 port on
-	# 127.0.0.1, and which daemon answers there is exactly what this branch picks.
 	write_hev_conf_f "$hev" "$up" "$tun" "$addr" "$socks" "$mark" "$table"
 	# group tunnels carry far fewer sessions than default — a lower Go memory
 	# ceiling keeps 3 instances from claiming 144MiB of a 256MiB router
-	local gml=48MiB; [ "$kind" = default ] || gml=32MiB
+	gml=48MiB; [ "$kind" = default ] || gml=32MiB
 
-	if [ "$eng" = vless ]; then
-		[ -x /usr/bin/xray ] || { log "tunnel $idx ($kind $g): server $first is vless but /usr/bin/xray is missing, skip"; return 1; }
-		[ -n "$(srv_get "$first" address)" ] && [ -n "$(srv_get "$first" port)" ] || {
-			log "tunnel $idx ($kind $g): vless server $first has no address/port, skip"; return 1; }
-		# A VLESS section with no credential produces a config Xray still ACCEPTS —
-		# it dials, the handshake is rejected, and the tunnel looks up while carrying
-		# nothing. Refuse here instead, the same way the mieru path refuses an empty
-		# server list below.
-		[ -n "$(srv_get "$first" uuid)" ] || [ -n "$(srv_get "$first" username)" ] || {
-			log "tunnel $idx ($kind $g): vless server $first has no uuid, skip"; return 1; }
-		write_xray_conf_f "$xconf" "$socks" "$first"
-		if ! /usr/bin/xray run -test -c "$xconf" >/dev/null 2>&1; then
-			log "tunnel $idx ($kind $g): xray rejected the generated config, skip"
-			return 1
-		fi
-		procd_open_instance "$xi"
-		procd_set_param command /usr/bin/xray run -c "$xconf"
-		procd_set_param env GOGC=20 GOMEMLIMIT=$gml XRAY_LOCATION_ASSET="$RUN_DIR"
-		procd_set_param respawn 3600 5 0
-		procd_close_instance
-	else
-		user=$(srv_get "$first" username); pass=$(srv_get "$first" password)
-		# mieru pools every server of this tunnel natively; a vless section mixed into
-		# the same group has no ipAddress/portBindings shape and would be dropped by
-		# _servers_json anyway, so filter explicitly rather than by accident.
-		mset=""
-		for ms in $(tunnel_servers "$kind" "$g"); do
-			[ "$(srv_type "$ms")" = mieru ] && mset="$mset $ms"
-		done
-		sj=$(_servers_json $mset)
-		# tunnel_servers only proves the sections exist; _servers_json additionally drops
-		# any that lost their address or port. An empty list still produces a perfectly
-		# valid-looking profile with zero servers — mieru refuses it, but hev is started
-		# unconditionally right below, brings the tun up and installs the route, so the
-		# group's traffic disappears into a dead SOCKS port while syslog says "tunnel up".
-		[ -n "$sj" ] || { log "tunnel $idx ($kind $g): no usable servers, skip"; return 1; }
-		write_mieru_conf_f "$conf" "$prof" "$rpc" "$socks" "$user" "$pass" "$sj"
-		HOME="$home" /usr/bin/mieru apply config "$conf" >/dev/null 2>&1
-		procd_open_instance "$mi"
-		procd_set_param command /usr/bin/mieru run
-		procd_set_param env HOME="$home" GOGC=20 GOMEMLIMIT=$gml
-		procd_set_param respawn 3600 5 0
-		procd_close_instance
+	srv_usable "$first" || { log "tunnel $idx ($kind $g): server $first has no address/port/uuid, skip"; return 1; }
+	[ -x /usr/bin/xray ] || { log "tunnel $idx ($kind $g): /usr/bin/xray is missing, skip"; return 1; }
+	write_xray_conf_f "$xconf" "$socks" "$first"
+	# Validate before procd is told to keep it alive. A config Xray refuses makes
+	# procd respawn it every 5 s for ever, and the tun device would come up beside
+	# it either way — a tunnel that logs "up" and swallows every packet.
+	if ! /usr/bin/xray run -test -c "$xconf" >/dev/null 2>&1; then
+		log "tunnel $idx ($kind $g): xray rejected the generated config, skip"
+		return 1
 	fi
-
+	procd_open_instance "$xi"
+	procd_set_param command /usr/bin/xray run -c "$xconf"
+	procd_set_param env GOGC=20 GOMEMLIMIT=$gml XRAY_LOCATION_ASSET="$RUN_DIR"
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
 	procd_open_instance "$ti"
 	procd_set_param command /usr/bin/hev-socks5-tunnel "$hev"
 	procd_set_param respawn 3600 5 0
@@ -614,7 +530,7 @@ start_service() {
 	[ "$(uci_get enabled)" = "1" ] || { log "disabled in config"; return 0; }
 	# mesh role awareness (meownetvpn fleet): a NODE routes its internet through the
 	# main router's tunnel over the batman mesh, so it must NOT run its own
-	# mieru/hev. No /etc/meownet-role file (non-meownet router) → run normally.
+	# xray/hev. No /etc/meownet-role file (non-meownet router) → run normally.
 	if [ "$(cat /etc/meownet-role 2>/dev/null)" = "node" ]; then
 		log "meownetvpn role=node — skipping tunnel (main router provides the bypass)"
 		return 0

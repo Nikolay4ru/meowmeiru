@@ -4,7 +4,7 @@
 # twice: its DATA PATH (nft set, mtunN, fwmark rule, routing table) and its
 # TRANSPORT (an HTTP probe through that tunnel's local SOCKS5).
 #
-# Escalation is PER-TUNNEL, not global. A failing GROUP only gets its own mieru
+# Escalation is PER-TUNNEL, not global. A failing GROUP only gets its own xray
 # killed — procd respawns it in ~5 s (init.d: procd_set_param respawn 3600 5 0).
 # One flaky group no longer tears down all tunnels, reloads fw4, deletes the
 # nft table and SIGTERMs dnsmasq. Only the DEFAULT tunnel, which carries every
@@ -72,20 +72,6 @@ probe() {  # $1 = socks port, $2 = url
 # legitimately answer 206 or 307, and a false failure here costs a bounce.
 ok() { case "$1" in 2??|3??) return 0 ;; *) return 1 ;; esac; }
 
-# mieru derives its session keys from the wall clock, so a router whose time is
-# wrong fails EVERY handshake while TCP still connects: HandshakeErrors climbs
-# and ConnErrors stays 0. That is indistinguishable from a dead exit here, and
-# the failover below would walk the entire pool, bouncing off each server in
-# turn, without once touching the actual fault. It also cannot resolve itself —
-# settings.routed_dns is resolved INSIDE the tunnel, so a dead tunnel means no
-# DNS, and any NTP server named by hostname becomes unreachable at exactly the
-# moment it is needed. Observed live: a power cycle left a router two hours
-# behind and it stayed offline for four hours with a perfectly healthy WAN.
-# IP literals need no DNS, which is the whole point of them being literals.
-# Only ever called after a probe has already failed, so a healthy router pays
-# nothing for it. Returns 0 only when the clock was actually MOVED, so the caller
-# can restart the tunnels instead of recording a strike against a server that was
-# never at fault.
 NTP_FALLBACK_IPS="89.109.251.21 194.190.168.1 162.159.200.1"
 CLOCK_TOLERANCE=60
 clock_resync() {
@@ -118,7 +104,7 @@ clock_resync() {
 	return 1
 }
 
-# The probe above only ever talks to mieru on 127.0.0.1, so it proves the
+# The probe above only ever talks to xray on 127.0.0.1, so it proves the
 # transport and the exit — and nothing else. It never touches the nft set, the
 # fwmark rule or mtunN, so a tunnel whose routing plane collapsed probes
 # perfectly healthy while every packet it was supposed to carry falls through to
@@ -149,14 +135,13 @@ reload_throttled() {
 	echo "$now" > "$RELOAD_STAMP"
 }
 
-# Whatever is answering on this tunnel's SOCKS port — mieru or xray. Matching the
-# PORT rather than a binary name is the point: the engine is a per-server choice
-# now, and a watchdog that only knows how to find `mieru` silently stops bouncing
-# anything the moment a tunnel is switched to vless. It would still log strikes,
-# still fail probes, and never restart the process that was actually stuck.
+# Whoever is answering on this tunnel's SOCKS port. Matched on the PORT and not
+# on a binary name: the port is the contract hev depends on, a name is an
+# implementation detail that has already changed once, and a watchdog that misses
+# the process keeps logging strikes while never restarting what is actually stuck.
 engine_pid() {  # $1 = socks port -> pid listening on it, and its name
 	netstat -lntp 2>/dev/null | awk -v p="127.0.0.1:$1" '
-		$4 == p && $NF ~ /(mieru|xray)/ { n = split($NF, a, "/"); print a[1]" "a[2]; exit }'
+		$4 == p && $NF ~ /\// { n = split($NF, a, "/"); print a[1]" "a[2]; exit }'
 }
 hev_pid() {  # $1 = hev config file -> pid of the tun2socks instance holding it
 	# Matched on the exact "<binary> <config>" tail. `pgrep -f` looked simpler but
@@ -250,7 +235,7 @@ flaps() {  # record this bounce, return how many happened inside the window
 
 # init.d refuses to start a group whose every `option server` is gone (a deleted
 # section, or a subscription refresh that re-derived the section ids from new
-# addresses), so that group has no mieru, no hev and no mtunN BY DESIGN. Probing
+# addresses), so that group has no xray, no hev and no mtunN BY DESIGN. Probing
 # it anyway only produced a failed probe and a pointless bounce of a daemon that
 # was never meant to run, five minutes apart, for ever. Address AND port, because
 # that is bring_up_tunnel's real bail-out: tunnel_servers() only proves the
@@ -314,9 +299,9 @@ elif ok "$(probe "$BASE" "$(probe_url "")")"; then
 else
 	# Before blaming the exit: a clock that drifted breaks every handshake, and no
 	# amount of failover repairs that. It bites both engines for different reasons —
-	# mieru derives session keys from the wall clock, and a TLS certificate is
-	# rejected as not-yet-valid or expired — so the check belongs here, ahead of any
-	# server-level escalation, whichever engine this tunnel runs.
+	# a TLS certificate is rejected as not-yet-valid or expired long before any
+	# exit is at fault — so the check belongs here, ahead of any server-level
+	# escalation.
 	if clock_resync; then
 		/etc/init.d/meownetvpn restart >/dev/null 2>&1
 		clear_strike default

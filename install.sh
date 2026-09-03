@@ -5,13 +5,13 @@
 #   # or, if github is blocked on the box, via your mirror:
 #   MEOWNETVPN_MIRROR="https://router.koleso.app/meownetvpn" sh <(wget -qO- .../install.sh)
 #
-# Installs: mieru (socks5 transport) + hev-socks5-tunnel (tun2socks) + meownetvpn files,
-# then sets up policy routing of selected traffic through the mieru tunnel.
+# Installs: xray (VLESS transport) + hev-socks5-tunnel (tun2socks) + meownetvpn files,
+# then sets up policy routing of selected traffic through the tunnel.
 
 set -e
 REPO="${MEOWNETVPN_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowmeiru/main}"
 MIRROR="${MEOWNETVPN_MIRROR:-}"          # optional fallback base (e.g. https://router.koleso.app/meownetvpn)
-MIERU_VER="${MIERU_VER:-3.18.0}"
+XRAY_MIRROR="${XRAY_MIRROR:-https://meownet.app/updates/xray}"
 HEV_VER="${HEV_VER:-2.7.5}"
 
 say() { echo "[meownetvpn] $1"; }
@@ -24,13 +24,13 @@ command -v uci >/dev/null || err "uci not found"
 ARCH="$(uname -m)"
 case "$ARCH" in
 	aarch64) MARCH=arm64;   HARCH=arm64 ;;
-	armv7l|armv7) MARCH=armv7; HARCH=arm32v7 ;;
+	armv7l|armv7) MARCH=arm32; HARCH=arm32v7 ;;
 	x86_64) MARCH=amd64;    HARCH=x86_64 ;;
 	mips)   MARCH=mips;     HARCH=mips32 ;;
 	mipsel) MARCH=mipsle;   HARCH=mips32el ;;
 	*) err "unsupported arch: $ARCH (add it to install.sh)" ;;
 esac
-say "arch: $ARCH → mieru/$MARCH, hev/$HARCH"
+say "arch: $ARCH → xray/$MARCH, hev/$HARCH"
 
 # ── migration: mierukop → meownetvpn ─────────────────────────────────────────
 # The project was renamed and eight routers were already running the old name.
@@ -108,9 +108,19 @@ if [ -f /etc/config/mierukop ] && [ ! -f /etc/config/meownetvpn ]; then
 	rm -rf /www/luci-static/resources/mierukop /www/luci-static/resources/view/mierukop 2>/dev/null || true
 	rm -f /usr/share/luci/menu.d/luci-app-mierukop.json /usr/share/rpcd/acl.d/luci-app-mierukop.json 2>/dev/null || true
 	say "migrated; a copy of the old config is at /root/mierukop.config.bak"
+	# Every server section that came across is a mieru endpoint, and mieru is not a
+	# transport this version can run. They are left in place rather than deleted so
+	# the addresses stay recoverable, but nothing will come up until a VLESS
+	# subscription replaces them — say so now, loudly, instead of letting the router
+	# sit with a tunnel that never starts.
+	MN_NEEDS_SUB=1
 elif [ -f /etc/config/mierukop ] && [ -f /etc/config/meownetvpn ]; then
 	say "WARNING: both /etc/config/mierukop and /etc/config/meownetvpn exist — leaving both alone."
 	say "         remove the stale one by hand, then re-run; two services on one fwmark fight."
+fi
+if [ -f /etc/config/meownetvpn ] && ! grep -q "option type 'vless'" /etc/config/meownetvpn 2>/dev/null \
+   && grep -q "^config server" /etc/config/meownetvpn 2>/dev/null; then
+	MN_NEEDS_SUB=1
 fi
 # The section TYPE is part of the rename too. Nothing reads it (every lookup is
 # by section NAME), so a stale `config mierukop 'settings'` is harmless — but it
@@ -144,13 +154,12 @@ opkg install kmod-tun nftables curl ca-bundle ip-full >/dev/null 2>&1 || true
 command -v ip >/dev/null && ip rule list >/dev/null 2>&1 || \
 	say "WARNING: 'ip rule' unavailable — ensure ip-full (iproute2) is installed, busybox ip won't work"
 
-# ── binaries: mieru + hev-socks5-tunnel ──
+# ── binaries: xray + hev-socks5-tunnel ──
 # Pinned sha256 for the DEFAULT versions (supply-chain check). Only the arches we
 # have verified are listed; others fall back to a warning instead of a hard fail.
-# Refresh these when bumping MIERU_VER/HEV_VER.
+# Refresh these when bumping HEV_VER. Xray comes from the mirror as a UPX-packed
+# build and is verified by RUNNING it instead — see below.
 sha_for() { # sha_for <name> <arch>
-	[ "$MIERU_VER" = "3.18.0" ] && case "$1:$2" in
-		mieru:arm64) echo 5172a716ebf4d8653a04bba6e8f4837f816173841c66d027d073915f08b65705; return;; esac
 	[ "$HEV_VER" = "2.7.5" ] && case "$1:$2" in
 		hev-socks5-tunnel:arm64) echo 311677bc9ed408fad8a9688d58580d4c125d4a0b8d5dd8d3b1a1e60e7e8733a8; return;; esac
 }
@@ -176,10 +185,24 @@ get_bin() { # get_bin <name> <primary-url> <dest> <arch>
 	err "could not fetch $name (set MEOWNETVPN_MIRROR to a reachable host that serves /bin/$name)"
 }
 
-if ! command -v mieru >/dev/null; then
-	get_bin mieru \
-		"https://github.com/enfein/mieru/releases/download/v${MIERU_VER}/mieru_linux_${MARCH}" \
-		/usr/bin/mieru "$MARCH"
+# Xray, not the upstream release. Upstream ships a 32.6 MB binary and overlay on
+# these routers is ~30 MB in total, so the official zip cannot be installed at all
+# — the mirror carries a UPX-packed build (7.6 MB, measured) that fits and starts
+# in the same second. A packed binary can unpack on one kernel and fault on
+# another, so it is checked by being RUN before it is allowed near /usr/bin: an
+# xray that faults is a tunnel that never comes up on a router nobody is next to.
+if ! command -v xray >/dev/null; then
+	say "fetching xray ($XRAY_MIRROR/xray-$MARCH)…"
+	if dl "$XRAY_MIRROR/xray-$MARCH" /tmp/xray.dl 2>/dev/null && [ -s /tmp/xray.dl ]; then
+		chmod +x /tmp/xray.dl
+		case "$(/tmp/xray.dl version 2>&1 | head -1)" in
+			Xray*) mv /tmp/xray.dl /usr/bin/xray; chmod +x /usr/bin/xray; say "xray installed" ;;
+			*) rm -f /tmp/xray.dl; err "the downloaded xray does not run on this box" ;;
+		esac
+	else
+		rm -f /tmp/xray.dl
+		err "could not fetch xray from $XRAY_MIRROR (set XRAY_MIRROR to a host serving xray-$MARCH)"
+	fi
 fi
 get_bin hev-socks5-tunnel \
 	"https://github.com/heiher/hev-socks5-tunnel/releases/download/${HEV_VER}/hev-socks5-tunnel-linux-${HARCH}" \
@@ -200,7 +223,6 @@ fetch_file etc/init.d/meownetvpn         /etc/init.d/meownetvpn          755
 fetch_file etc/meownetvpn/update-lists.sh /etc/meownetvpn/update-lists.sh 755
 fetch_file etc/meownetvpn/watchdog.sh    /etc/meownetvpn/watchdog.sh     755
 fetch_file usr/bin/meownetvpn            /usr/bin/meownetvpn             755
-ln -sf /usr/bin/meownetvpn /usr/bin/meowmieru   # meowMieru brand alias
 
 # LuCI app (multi-page): shared lib + per-tab views + menu + acl
 fetch_repo() { # fetch_repo <repo-path> <dest> <mode>
@@ -252,7 +274,7 @@ Depends: nftables, dnsmasq-full, kmod-tun, ip-full, curl, ca-bundle
 Section: net
 Architecture: all
 Installed-Size: $PKG_SZ
-Description: Selective routing over a mieru SOCKS5 tunnel (podkop-style) with LuCI app
+Description: Selective routing over a xray SOCKS5 tunnel (podkop-style) with LuCI app
 CTL
 if grep -q "^Package: meownetvpn\$" "$STATUS" 2>/dev/null; then
 	awk 'BEGIN{RS="";ORS="\n\n"} !/^Package: meownetvpn\n/' "$STATUS" > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
@@ -268,7 +290,7 @@ Installed-Time: $(date +%s)
 STAT
 
 # ── clock: NTP by IP, or the tunnel can never come back ──
-# mieru derives its session keys from the wall clock, so a router whose time is
+# xray derives its session keys from the wall clock, so a router whose time is
 # wrong fails EVERY handshake while TCP still connects — HandshakeErrors climbs
 # and ConnErrors stays 0, which reads like a dead server and is not one.
 # Nothing recovers from that by itself here, because the recovery path runs
@@ -309,7 +331,7 @@ cat <<EOF
 [meownetvpn] installed.
 
 Next:
-  1) set your mieru server:
+  1) set your xray server:
        meownetvpn set-server <ip> <port> <username> <password>
   2) start:
        meownetvpn restart
@@ -320,3 +342,12 @@ Next:
 Routed by default: Telegram subnets + domains (telegram.org, t.me, telegra.ph).
 Add more:  meownetvpn add-domain <domain>   /   meownetvpn add-subnet <cidr>
 EOF
+
+if [ "${MN_NEEDS_SUB:-0}" = 1 ]; then
+	echo
+	say "ACTION REQUIRED: the servers in this config are mieru endpoints and this"
+	say "version speaks VLESS only. Nothing will come up until you import a"
+	say "subscription:"
+	say "    meownetvpn sub <subscription-url>"
+	say "    meownetvpn restart"
+fi

@@ -27,48 +27,40 @@ return lib.page({
       _('Активный выбирается выше. Пинг обновляется кнопкой ниже и раз в 10 минут.'));
     s.addremove=true; s.anonymous=true; s.sortable=false;
     s.option(form.Value,'label',_('Метка'));
-    o=s.option(form.ListValue,'type',_('Протокол'));
-    o.value('mieru','mieru'); o.value('vless','VLESS (Xray)');
-    // Absent means mieru: sections written before VLESS existed carry no `type`,
-    // and defaulting the other way would relabel a live fleet's servers.
-    o.default='mieru';
     s.option(form.Value,'address',_('Адрес')).datatype='host';
     s.option(form.Value,'port',_('Порт')).datatype='port';
     o=s.option(form.DummyValue,'_ping',_('Пинг, мс'));
     o.cfgvalue=function(sid){ var ms=self.pingMap[sid]; return (ms&&ms!=='—')?ms:'—'; };
-
-    // ── mieru ──
-    o=s.option(form.Value,'username',_('Пользователь')); o.modalonly=true; o.depends('type','mieru');
-    o=s.option(form.Value,'password',_('Пароль')); o.password=true; o.modalonly=true; o.depends('type','mieru');
-    o=s.option(form.ListValue,'transport',_('Транспорт')); o.value('TCP'); o.value('UDP');
-    o.modalonly=true; o.depends('type','mieru');
-
-    // ── vless ──
-    // depends() on an absent `type` never fires, so these stay hidden for every
-    // pre-existing mieru section without needing a migration of the config itself.
-    o=s.option(form.Value,'uuid',_('UUID')); o.modalonly=true; o.depends('type','vless');
+    o=s.option(form.Value,'uuid',_('UUID')); o.modalonly=true;
     o=s.option(form.ListValue,'network',_('Транспорт'));
     o.value('xhttp','XHTTP'); o.value('ws','WebSocket'); o.value('grpc','gRPC');
     o.value('httpupgrade','HTTPUpgrade'); o.value('tcp','TCP');
-    o.default='xhttp'; o.modalonly=true; o.depends('type','vless');
+    o.default='xhttp'; o.modalonly=true;
     o=s.option(form.ListValue,'security',_('Шифрование'));
     o.value('tls','TLS'); o.value('none',_('нет'));
-    o.default='tls'; o.modalonly=true; o.depends('type','vless');
+    o.default='tls'; o.modalonly=true;
     o=s.option(form.Value,'sni',_('SNI'));
-    o.placeholder=_('по умолчанию — адрес сервера'); o.modalonly=true; o.depends('type','vless');
-    o=s.option(form.Value,'path',_('Путь'));
-    o.placeholder='/'; o.modalonly=true; o.depends('type','vless');
+    o.placeholder=_('по умолчанию — адрес сервера'); o.modalonly=true;
+    o=s.option(form.Value,'path',_('Путь')); o.placeholder='/'; o.modalonly=true;
     o=s.option(form.Value,'host',_('Заголовок Host'));
-    o.placeholder=_('по умолчанию — SNI'); o.modalonly=true; o.depends('type','vless');
+    o.placeholder=_('по умолчанию — SNI'); o.modalonly=true;
     o=s.option(form.ListValue,'xmode',_('Режим XHTTP'));
     o.value('auto','auto'); o.value('packet-up','packet-up');
     o.value('stream-up','stream-up'); o.value('stream-one','stream-one');
-    o.default='auto'; o.modalonly=true; o.depends({'type':'vless','network':'xhttp'});
+    o.default='auto'; o.modalonly=true; o.depends('network','xhttp');
     o=s.option(form.ListValue,'fingerprint',_('Отпечаток TLS'));
     ['chrome','firefox','safari','ios','android','edge','random'].forEach(function(f){ o.value(f,f); });
-    o.default='chrome'; o.modalonly=true; o.depends({'type':'vless','security':'tls'});
+    o.default='chrome'; o.modalonly=true; o.depends('security','tls');
+    o=s.option(form.Value,'alpn',_('ALPN'));
+    o.placeholder='h2,http/1.1'; o.modalonly=true; o.depends('security','tls');
     o=s.option(form.Value,'flow',_('Flow'));
-    o.placeholder=_('пусто для XHTTP'); o.modalonly=true; o.depends('type','vless');
+    o.placeholder=_('пусто для XHTTP'); o.modalonly=true;
+    // Handed out by the panel as a JSON blob (xPaddingBytes and the like) and
+    // passed to Xray verbatim. Read-only here on purpose: it is not a field to
+    // compose by hand, and a malformed object is silently dropped by the config
+    // writer rather than breaking the tunnel.
+    o=s.option(form.Value,'extra',_('Доп. параметры транспорта'));
+    o.placeholder='{"xPaddingBytes":"100-1000"}'; o.modalonly=true;
 
     return m.render().then(function(formNode){
       var out=E('div',{'class':'mk-out'});
@@ -97,7 +89,7 @@ return lib.page({
       var subOut=E('div',{'class':'mk-out'});
       var subSection=E('div',{'class':'cbi-section'},[
         E('h3',{},_('Подписка')),
-        E('div',{'class':'mk-hint'},_('Вставь ссылку (формат clash) — импортирую все mieru-серверы, применю и обновлю списки. URL запоминается; авто-обновление включается в «Настройках».')),
+        E('div',{'class':'mk-hint'},_('Вставь ссылку на подписку — Clash YAML или список vless://, в том числе в base64. Серверы импортируются, списки обновляются. URL запоминается; авто-обновление включается в «Настройках».')),
         E('div',{'class':'mk-act'},[
           subInput,
           self.mkBtn('subimport','cbi-button-action',_('Импортировать'), function(){

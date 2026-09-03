@@ -1,5 +1,5 @@
 #!/bin/sh
-# meownetvpn list updater — community lists (podkop-style) over the mieru tunnels.
+# meownetvpn list updater — community lists (podkop-style) over the VLESS tunnels.
 #
 # Supports routing GROUPS: the default tunnel routes settings.community_lists into
 # the main set; each `config group` routes its own community_lists into its OWN set
