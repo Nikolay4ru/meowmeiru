@@ -153,7 +153,7 @@ EOF
 # deliberately addressed by IP.
 write_xray_conf_f() {  # file socks server_section
 	local f="$1" socks="$2" s="$3"
-	local addr port uuid sni host path net sec flow fp xmode alpn insec lvl stream tls
+	local addr port uuid sni host path net sec flow fp xmode alpn insec lvl stream tls xex
 	addr=$(srv_get "$s" address); port=$(srv_get "$s" port)
 	uuid=$(srv_get "$s" uuid); [ -n "$uuid" ] || uuid=$(srv_get "$s" username)
 	sni=$(srv_get "$s" sni);   [ -n "$sni" ]  || sni="$addr"
@@ -169,8 +169,14 @@ write_xray_conf_f() {  # file socks server_section
 	lvl=$(uci_get xray_loglevel)
 	case "$lvl" in debug|info|warning|error|none) ;; *) lvl=warning ;; esac
 
+	# `extra` is a JSON object the panel hands out verbatim (xPaddingBytes and the
+	# like). It is inserted, not modelled: Xray owns that schema and it grows, and a
+	# key we quietly drop changes the shape of the traffic away from what the panel
+	# issued — which is precisely what DPI measures.
+	xex=$(srv_get "$s" extra)
+	case "$xex" in "{"*) ;; *) xex="" ;; esac
 	case "$net" in
-		xhttp) stream="\"xhttpSettings\": { \"path\": \"$path\", \"host\": \"$host\", \"mode\": \"$xmode\" }" ;;
+		xhttp) stream="\"xhttpSettings\": { \"path\": \"$path\", \"host\": \"$host\", \"mode\": \"$xmode\"${xex:+, \"extra\": $xex} }" ;;
 		ws)    stream="\"wsSettings\": { \"path\": \"$path\", \"headers\": { \"Host\": \"$host\" } }" ;;
 		grpc)  stream="\"grpcSettings\": { \"serviceName\": \"${path#/}\" }" ;;
 		httpupgrade) stream="\"httpupgradeSettings\": { \"path\": \"$path\", \"host\": \"$host\" }" ;;

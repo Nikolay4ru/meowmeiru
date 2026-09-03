@@ -840,14 +840,14 @@ case "$1" in
 		    else if (t == "vless") {
 		      if (sni == "") sni = s
 		      if (net == "") net = "tcp"
-		      print "vless\t"d(n)"\t"s"\t"p"\t"net"\t"d(uuid)"\t-\t-\t"d(sni)"\t"d(path)"\t"d(hh)"\t"d(sec)"\t"d(flow)"\t"d(fp)"\t"d(xmode)
+		      print "vless\t"d(n)"\t"s"\t"p"\t"net"\t"d(uuid)"\t"d(alpn)"\t"d(xtra)"\t"d(sni)"\t"d(path)"\t"d(hh)"\t"d(sec)"\t"d(flow)"\t"d(fp)"\t"d(xmode)
 		    }
 		  }
 		  /^[[:space:]]*-[[:space:]]*name:/ {
 		    emit()
 		    n=val($0)
 		    t="";s="";p="";tr="TCP";u="";pw="";mx="MULTIPLEXING_MIDDLE"
-		    uuid="";sni="";path="";hh="";sec="";flow="";fp="";xmode="";net=""
+		    uuid="";sni="";path="";hh="";sec="";flow="";fp="";xmode="";net="";alpn="";xtra=""
 		    next }
 		  /^[[:space:]]*type:/         {t=val($0)}
 		  /^[[:space:]]*server:/       {s=val($0)}
@@ -860,6 +860,7 @@ case "$1" in
 		  /^[[:space:]]*(servername|sni):/ {sni=val($0)}
 		  /^[[:space:]]*network:/      {net=val($0)}
 		  /^[[:space:]]*(client-fingerprint|fingerprint):/ {fp=val($0)}
+		  /^[[:space:]]*alpn:/         {alpn=val($0); gsub(/[][ ]/, "", alpn)}
 		  /^[[:space:]]*flow:/         {flow=val($0)}
 		  /^[[:space:]]*tls:/          {if (val($0) == "true") sec="tls"}
 		  /^[[:space:]]*path:/         {if (path == "") path=val($0)}
@@ -905,14 +906,21 @@ case "$1" in
 			flow=$(qval "$query" flow)
 			fp=$(qval "$query" fp);         [ -n "$fp" ] || fp=chrome
 			xmode=$(qval "$query" mode);    [ -n "$xmode" ] || xmode=auto
+			alpn=$(urldec "$(qval "$query" alpn)")
+			# `extra` carries a JSON blob of transport options the URI form has no
+			# named slot for (xPaddingBytes and friends). Pass it through verbatim
+			# rather than trying to model each key: Xray owns that schema, it grows,
+			# and a field we silently drop is a traffic shape that no longer matches
+			# what the panel handed out — which is the one thing DPI is looking at.
+			xextra=$(urldec "$(qval "$query" extra)")
 			[ -n "$label" ] || label="$host:$port"
 			# "-" for an absent value, never an empty column — see the note in the awk
 			# above: a run of TABs collapses in `read` and shifts every later field.
-			for v in label net uuid sni path hh sec flow fp xmode; do
+			for v in label net uuid sni path hh sec flow fp xmode alpn xextra; do
 				eval "[ -n \"\$$v\" ] || $v=-"
 			done
-			printf 'vless\t%s\t%s\t%s\t%s\t%s\t-\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-				"$label" "$host" "$port" "$net" "$uuid" "$sni" "$path" "$hh" "$sec" "$flow" "$fp" "$xmode" >> "$tsv"
+			printf 'vless\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+				"$label" "$host" "$port" "$net" "$uuid" "$alpn" "$xextra" "$sni" "$path" "$hh" "$sec" "$flow" "$fp" "$xmode" >> "$tsv"
 		done < "$tmp"
 		fi
 		cnt=$(grep -c . "$tsv" 2>/dev/null)
@@ -935,6 +943,9 @@ case "$1" in
 		nvless=0; nmieru=0
 		# "-" is the empty marker the two parsers above agree on
 		unmark() { [ "$1" = "-" ] && echo "" || echo "$1"; }
+		# For a vless row columns 7 and 8 carry alpn and the transport `extra` blob;
+		# for a mieru row the same two carry password and multiplexing. One layout,
+		# because every consumer branches on column 1 anyway.
 		while IFS="$TAB" read -r styp name srv port net user pass mux sni path hh sec flow fp xmode; do
 			[ -n "$srv" ] || continue
 			name=$(unmark "$name"); net=$(unmark "$net"); user=$(unmark "$user")
@@ -978,6 +989,8 @@ case "$1" in
 				[ -n "$path" ]  && uci set $CONF.$id.path="$path"
 				[ -n "$hh" ]    && uci set $CONF.$id.host="$hh"
 				[ -n "$flow" ]  && uci set $CONF.$id.flow="$flow"
+				[ -n "$pass" ]  && uci set $CONF.$id.alpn="$pass"
+				[ -n "$mux" ]   && uci set $CONF.$id.extra="$mux"
 				[ -n "$fp" ]    && uci set $CONF.$id.fingerprint="$fp"
 				[ -n "$xmode" ] && uci set $CONF.$id.xmode="$xmode"
 				nvless=$((nvless+1))
