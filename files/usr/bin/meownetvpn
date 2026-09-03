@@ -940,10 +940,10 @@ case "$1" in
 		# same endpoint therefore keeps its name.
 		# What makes two entries the SAME server. Address and port are not enough:
 		# a panel can front several exits behind one TLS endpoint and tell them apart
-		# by the XHTTP path — five "countries" arriving as one host:port with paths
-		# /api/video/hls, /api/audio/track and so on. Keyed on host:port alone, four
-		# of those five collapse into one section and the country choice is silently
-		# lost; the import even says "skipped duplicate" while doing it.
+		# by the XHTTP path alone, so several "countries" arrive as one host:port.
+		# Keyed on host:port, all but one of them collapse into a single section and
+		# the country choice is silently lost — the import even says "skipped
+		# duplicate" while doing it.
 		find_srv() {  # $1=address $2=port $3=path -> existing server section, if any
 			local s
 			for s in $(server_list); do
