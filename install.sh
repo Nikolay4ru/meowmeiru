@@ -130,27 +130,50 @@ if [ -f /etc/config/meownetvpn ]; then
 	sed -i "s/^config[[:space:]]\+mierukop[[:space:]]\+'settings'/config meownetvpn 'settings'/; s/^config[[:space:]]\+meownetvpn[[:space:]]\+'settings'/config meownetvpn 'settings'/" /etc/config/meownetvpn 2>/dev/null || true
 fi
 
+# ── package manager: opkg (<=24.10) or apk (25.x+) ──
+# OpenWrt switched from opkg to apk in 25.x. Detect which is present and wrap the
+# operations the installer needs, so the rest of the script stays package-manager
+# agnostic. opkg keeps working on older firmware exactly as before.
+if command -v apk >/dev/null 2>&1; then PM=apk; else PM=opkg; fi
+say "package manager: $PM"
+pm_update()  { case "$PM" in apk) apk update >/dev/null 2>&1 || true ;; opkg) opkg update >/dev/null 2>&1 || true ;; esac; }
+pm_install() { case "$PM" in apk) apk add "$@" >/dev/null 2>&1 || true ;; opkg) opkg install "$@" >/dev/null 2>&1 || true ;; esac; }
+# dnsmasq-full is a conflicting alternative to dnsmasq: it must replace it, not sit
+# beside it. Both package managers kill DNS mid-swap, so a temp resolver is pinned
+# and the download/cache makes the reinstall offline-safe.
+pm_swap_dnsmasq_full() { case "$PM" in
+	apk)
+		apk add dnsmasq-full >/dev/null 2>&1 && return 0
+		apk fetch dnsmasq-full >/dev/null 2>&1 || true
+		apk del dnsmasq >/dev/null 2>&1
+		apk add dnsmasq-full >/dev/null 2>&1 || apk add dnsmasq >/dev/null 2>&1 ;;
+	opkg)
+		opkg install dnsmasq-full --download-only --force-overwrite >/dev/null 2>&1 || true
+		opkg remove dnsmasq >/dev/null 2>&1
+		opkg install dnsmasq-full --force-overwrite >/dev/null 2>&1 || \
+			opkg install dnsmasq --force-overwrite >/dev/null 2>&1 ;;
+esac; }
+
 # ── dependencies ──
-say "installing deps (nftables, dnsmasq-full, kmod-tun, ca-bundle, curl)…"
-opkg update >/dev/null 2>&1 || true
+say "installing deps (nftables, dnsmasq-full, kmod-tun, ca-bundle, curl, ip-full)…"
+pm_update
+# ip-full (iproute2) is REQUIRED — busybox `ip` cannot do `ip rule` / routing tables / tuntap
+pm_install kmod-tun nftables curl ca-bundle ip-full
 # dnsmasq-full needed for nftset= domain routing; replace plain dnsmasq.
-# Removing dnsmasq kills DNS → opkg can't resolve the mirror, so pin a temp
-# resolver first and fall back to plain dnsmasq if -full won't install.
 if dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'no-nftset'; then
 	say "swapping dnsmasq -> dnsmasq-full (needed for domain lists)..."
 	echo "nameserver 8.8.8.8" > /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null || true
-	opkg update >/dev/null 2>&1 || true
-	opkg install dnsmasq-full --download-only --force-overwrite >/dev/null 2>&1 || true
 	cp /etc/config/dhcp /etc/config/dhcp.meownetvpn.bak 2>/dev/null
-	opkg remove dnsmasq >/dev/null 2>&1
-	opkg install dnsmasq-full --force-overwrite >/dev/null 2>&1 || \
-		opkg install dnsmasq --force-overwrite >/dev/null 2>&1
+	pm_swap_dnsmasq_full
 	[ -s /etc/config/dhcp ] || cp /etc/config/dhcp.meownetvpn.bak /etc/config/dhcp 2>/dev/null
 	/etc/init.d/dnsmasq enable >/dev/null 2>&1
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
 fi
-# ip-full (iproute2) is REQUIRED — busybox `ip` cannot do `ip rule` / routing tables / tuntap
-opkg install kmod-tun nftables curl ca-bundle ip-full >/dev/null 2>&1 || true
+# kmod-tun must actually yield a working tun device — on a fresh box the module may
+# need loading before /dev/net/tun appears, and the tunnel is dead without it.
+modprobe tun 2>/dev/null || true
+[ -c /dev/net/tun ] || { mkdir -p /dev/net; mknod /dev/net/tun c 10 200 2>/dev/null || true; }
+[ -c /dev/net/tun ] || say "WARNING: /dev/net/tun missing — kmod-tun may not match this kernel; the tunnel will not come up"
 command -v ip >/dev/null && ip rule list >/dev/null 2>&1 || \
 	say "WARNING: 'ip rule' unavailable — ensure ip-full (iproute2) is installed, busybox ip won't work"
 
@@ -243,7 +266,11 @@ fetch_repo luci/root/usr/share/rpcd/acl.d/luci-app-meownetvpn.json    /usr/share
 dl "$REPO/VERSION" /etc/meownetvpn/VERSION 2>/dev/null || echo "1.1.0" > /etc/meownetvpn/VERSION
 mkdir -p /etc/meownetvpn/lists
 
-# ── register with opkg so it shows in the LuCI package manager (removable/upgradeable) ──
+# ── register with the package manager so it shows in LuCI (removable/upgradeable) ──
+# Only opkg keeps a hand-editable text db we can add a synthetic entry to. apk's db
+# is signed/binary with no supported out-of-band-install path, so on apk we skip
+# registration — the module works fully, it just is not listed as removable there.
+if [ "$PM" = opkg ]; then
 say "registering package with opkg…"
 PKG_VER="$(cat /etc/meownetvpn/VERSION 2>/dev/null || echo 1.1.0)"
 INFO=/usr/lib/opkg/info; STATUS=/usr/lib/opkg/status; mkdir -p "$INFO"
@@ -288,6 +315,8 @@ Architecture: all
 Installed-Time: $(date +%s)
 
 STAT
+fi
+
 
 # ── clock: NTP by IP, or the tunnel can never come back ──
 # xray derives its session keys from the wall clock, so a router whose time is
