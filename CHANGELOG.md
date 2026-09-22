@@ -2,6 +2,13 @@
 
 All notable changes to **meowMieru** (mierukop) are documented here.
 
+## [3.2.2] — 2026-09-22
+- Heartbeat падал на роутерах без активных wifi-станций: фолбэк `assoc_macs`
+  собирал MAC из аренд DHCP через `paste`, а busybox в сборках 25.x идёт без апплета
+  `paste` («not found»). Джойн переписан на awk. (Та же природа, что и отсутствующий
+  `base64` в 3.1.2.) На роутерах с подключёнными клиентами путь через `iw` не
+  затрагивался, поэтому вылезало только при пустом списке станций.
+
 ## [3.2.1] — 2026-09-22
 - Heartbeat выровнен под РЕАЛЬНЫЙ контракт консоли. Приёмник `/api/heartbeat` на
   router.koleso.app разбирает тело как `x-www-form-urlencoded` (parse_qs), а не JSON —

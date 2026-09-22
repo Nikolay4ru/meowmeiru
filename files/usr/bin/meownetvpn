@@ -1160,7 +1160,8 @@ case "$1" in
 				done
 			done
 		fi
-		[ -n "$assoc" ] || assoc=$(awk '{print $2}' /tmp/dhcp.leases 2>/dev/null | paste -sd, -)
+		# join lease MACs with awk, not `paste` — busybox 25.x omits the paste applet
+		[ -n "$assoc" ] || assoc=$(awk '{ out = out (out?",":"") $2 } END{ print out }' /tmp/dhcp.leases 2>/dev/null)
 		clients=0; [ -n "$assoc" ] && clients=$(printf '%s' "$assoc" | tr ',' '\n' | grep -c .)
 
 		# tunnel liveness + a real transport probe for proxy_up and its latency.
