@@ -47,6 +47,16 @@ return lib.page({
     o=s.option(form.Value,'update_interval',_('Обновление списков (часы)'));
     o.datatype='uinteger'; o.placeholder='24';
 
+    s=m.section(form.NamedSection,'settings','meownetvpn',_('Мониторинг'));
+    o=s.option(form.Flag,'report',_('Отправлять состояние в консоль'),
+      _('Раз в несколько минут отправлять на консоль парка сводку: модель, версия, активный выход, статус туннеля, число клиентов и трафик. Уходит НАПРЯМУЮ, минуя туннель.'));
+    o=s.option(form.Value,'report_url',_('Адрес консоли'));
+    o.placeholder='https://router.koleso.app/api/heartbeat'; o.depends('report','1'); o.optional=true;
+    o=s.option(form.Value,'report_token',_('Токен'));
+    o.password=true; o.depends('report','1'); o.optional=true;
+    o=s.option(form.Value,'report_interval',_('Интервал (мин)'));
+    o.datatype='uinteger'; o.placeholder='5'; o.depends('report','1'); o.optional=true;
+
     s=m.section(form.NamedSection,'settings','meownetvpn',_('Сеть'));
     s.anonymous=true; s.addremove=false;
     o=s.option(form.Value,'socks_port',_('Локальный порт SOCKS5')); o.datatype='port'; o.optional=true;

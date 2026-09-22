@@ -461,7 +461,7 @@ sync_fw_zone() {
 setup_cron() {
 	local cron="/etc/crontabs/root" iv
 	touch "$cron"
-	sed -i '/meownetvpn\/\(watchdog\|update-lists\)\.sh/d;/meownetvpn sample/d;/meownetvpn pingall/d;/meownetvpn update-auto/d;/meownetvpn auto-best/d;/meownetvpn sub-refresh/d' "$cron"
+	sed -i '/meownetvpn\/\(watchdog\|update-lists\)\.sh/d;/meownetvpn sample/d;/meownetvpn pingall/d;/meownetvpn update-auto/d;/meownetvpn auto-best/d;/meownetvpn sub-refresh/d;/meownetvpn heartbeat/d' "$cron"
 	[ "$(uci_get watchdog)" = "1" ] && echo "*/5 * * * * /etc/meownetvpn/watchdog.sh" >> "$cron"
 	echo "* * * * * /usr/bin/meownetvpn sample" >> "$cron"
 	# feature-gated entries only when the feature is on — an entry that execs the
@@ -476,6 +476,11 @@ setup_cron() {
 		echo "41 4 * * * /usr/bin/meownetvpn sub-refresh >/dev/null 2>&1" >> "$cron"
 	[ "$(uci_get auto_update)" = "1" ] && \
 		echo "17 4 * * 6 /usr/bin/meownetvpn update-auto >/dev/null 2>&1" >> "$cron"
+	# telemetry heartbeat to the fleet console — opt-in, cadence in minutes.
+	if [ "$(uci_get report)" = "1" ]; then
+		hbiv=$(uci_get report_interval); case "$hbiv" in ''|*[!0-9]*|0) hbiv=5 ;; esac
+		echo "*/$hbiv * * * * /usr/bin/meownetvpn heartbeat >/dev/null 2>&1" >> "$cron"
+	fi
 	iv=$(uci_get update_interval)
 	[ -n "$iv" ] && [ "$iv" != "0" ] && echo "23 5 */$(( iv/24>0 ? iv/24 : 1 )) * * /etc/meownetvpn/update-lists.sh download" >> "$cron"
 	/etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1
@@ -622,7 +627,7 @@ stop_service() {
 	# dnsmasq only if content changed) — removing it here would force a restart
 	if [ "$full" = 1 ]; then
 		rm -f /tmp/dnsmasq.d/meownetvpn*.conf /tmp/dnsmasq.*.d/meownetvpn*.conf 2>/dev/null
-		sed -i '/meownetvpn\/\(watchdog\|update-lists\)\.sh/d;/meownetvpn sample/d;/meownetvpn pingall/d;/meownetvpn update-auto/d;/meownetvpn auto-best/d;/meownetvpn sub-refresh/d' /etc/crontabs/root 2>/dev/null
+		sed -i '/meownetvpn\/\(watchdog\|update-lists\)\.sh/d;/meownetvpn sample/d;/meownetvpn pingall/d;/meownetvpn update-auto/d;/meownetvpn auto-best/d;/meownetvpn sub-refresh/d;/meownetvpn heartbeat/d' /etc/crontabs/root 2>/dev/null
 		/etc/init.d/dnsmasq restart >/dev/null 2>&1
 	fi
 	log "stopped"
