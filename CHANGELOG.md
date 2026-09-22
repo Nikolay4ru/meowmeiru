@@ -2,6 +2,20 @@
 
 All notable changes to **meowMieru** (mierukop) are documented here.
 
+## [3.2.1] — 2026-09-22
+- Heartbeat выровнен под РЕАЛЬНЫЙ контракт консоли. Приёмник `/api/heartbeat` на
+  router.koleso.app разбирает тело как `x-www-form-urlencoded` (parse_qs), а не JSON —
+  версия 3.2.0 слала JSON, который сервер молча игнорировал. Теперь отправляются те
+  самые поля, что читает сервер: `hostname, mac, version, role, uptime, wan_ip, lan_ip,
+  wan_iface, clients, proxy_up, proxy_host, proxy_latency_ms, dns_up, wan_rx, wan_tx,
+  mesh_nodes, assoc_macs`. `proxy_up`/`dns_up` — строки «1»/«0»; скорость (Mbps) консоль
+  считает сама из дельты `wan_rx`/`wan_tx`, поэтому шлём кумулятивные счётчики, а не rate.
+  `assoc_macs` — MAC-адреса подключённых wifi-станций (консоль по ним диффит вход/выход
+  клиентов), с откатом на MAC из аренд DHCP. Эндпоинт без авторизации — токен убран.
+- Проверено сквозняком на живом роутере: POST → 200, запись появилась в routers.json
+  консоли с корректными clients/proxy_up/proxy_host/latency, а после второго сообщения
+  консоль посчитала mbps_rx/mbps_tx по дельте.
+
 ## [3.2.0] — 2026-09-22
 ### Телеметрия: heartbeat в консоль парка
 Модуль теперь умеет отправлять на консоль (router.koleso.app) компактную JSON-сводку

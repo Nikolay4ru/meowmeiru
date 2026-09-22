@@ -27,7 +27,6 @@ config meownetvpn 'settings'
 	# to define; router_id is auto-filled from the LAN MAC on first beat.
 	option report '0'
 	#option report_url 'https://router.koleso.app/api/heartbeat'
-	#option report_token ''
 	option report_interval '5'
 	# kill-switch: drop routed traffic if the tunnel is down (no direct leak)
 	option killswitch '0'

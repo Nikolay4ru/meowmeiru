@@ -1129,114 +1129,80 @@ case "$1" in
 		echo "mieru removed; overlay: $(df -h /overlay 2>/dev/null | awk 'NR==2{print $4" free"}')"
 		;;
 	heartbeat|report-state)
-		# Push a compact JSON snapshot of this router to the fleet console
-		# (router.koleso.app). DIRECT over the WAN, never through the tunnel: the
-		# heartbeat must still arrive when the tunnel is down — that is exactly when
-		# the console most needs to hear from us. router.koleso.app is not in the
-		# routed lists, so router-originated traffic to it is unmarked anyway.
+		# Push this router's state to the fleet console (router.koleso.app). The
+		# console's /api/heartbeat is auth-exempt and parses an x-www-form-urlencoded
+		# body (parse_qs) — NOT JSON — so this posts form fields with the exact names
+		# the server reads. The server keeps cumulative wan_rx/wan_tx and derives
+		# Mbps itself (compute_mbps), so we send counters, not rates.
 		#
-		# Endpoint, token and cadence are uci knobs, because the ingestion URL and
-		# auth are the console's to define, not ours to hardcode:
 		#   settings.report          '1' to enable (cron entry is gated on it)
 		#   settings.report_url      POST target (default below)
-		#   settings.report_token    sent as "Authorization: Bearer <token>"
 		#   settings.report_interval minutes between beats (cron; default 5)
-		# `heartbeat print` writes the JSON to stdout and sends nothing — hand that
-		# to whoever wires the console, so both sides agree on the shape.
+		# `heartbeat print` prints the form body and sends nothing.
 		mode="$2"
 		url=$(uci -q get $CONF.settings.report_url); [ -n "$url" ] || url="https://router.koleso.app/api/heartbeat"
-		tok=$(uci -q get $CONF.settings.report_token)
 
-		# JSON string escaper: backslash and quote only — every value below is a
-		# controlled string (labels, ids, versions), never arbitrary user input.
-		je() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-
-		# ── identity ──
-		id=$(uci -q get $CONF.settings.router_id)
-		if [ -z "$id" ]; then
-			id=$(cat /sys/class/net/br-lan/address 2>/dev/null | tr -d ':' )
-			[ -n "$id" ] || id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-')
-			uci set $CONF.settings.router_id="$id"; uci commit $CONF
-		fi
 		host=$(uci -q get system.@system[0].hostname)
-		model=$(cat /tmp/sysinfo/model 2>/dev/null)
-		owrt=$(grep -o 'OpenWrt [0-9.]*' /etc/openwrt_release 2>/dev/null | head -1)
+		mac=$(cat /sys/class/net/br-lan/address 2>/dev/null | tr 'A-Z' 'a-z')
+		role=$(cat /etc/meownet-role 2>/dev/null)
 		up=0; read up _ < /proc/uptime 2>/dev/null; up=${up%.*}
-
-		# ── network ──
 		wandev=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++)if($i=="dev"){print $(i+1);exit}}')
 		wanip=$(ip -4 -o addr show "$wandev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
-		lan=$(ip -4 -o addr show br-lan 2>/dev/null | awk '{print $4}' | head -1)
+		lanip=$(ip -4 -o addr show br-lan 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
 
-		# ── tunnel state ──
-		en=$(uci -q get $CONF.settings.enabled); [ "$en" = 1 ] && en=true || en=false
-		sv=$(active_server); exlabel=$(srv_get "$sv" label); exaddr=$(srv_get "$sv" address)
-		xray=false; pgrep -f '/usr/bin/xray' >/dev/null && xray=true
-		hev=false;  pgrep -f hev-socks5-tunnel >/dev/null && hev=true
-		listen=false; netstat -tln 2>/dev/null | grep -q "127.0.0.1:$SOCKS_PORT " && listen=true
-		# proxy_up: the one boolean the old console keyed on. True only if the tunnel
-		# can actually carry a request right now, not merely that a process is alive.
-		proxy_up=false
-		if [ "$listen" = true ]; then
-			code=$(curl -fs --socks5-hostname 127.0.0.1:$SOCKS_PORT --max-time 8 -o /dev/null -w '%{http_code}' http://www.gstatic.com/generate_204 2>/dev/null)
-			case "$code" in 2??|3??) proxy_up=true ;; esac
+		# associated LAN clients: wifi stations if iw is present (matches the
+		# console's connect/disconnect diffing), else DHCP-lease MACs as a fallback.
+		assoc=""
+		if command -v iw >/dev/null 2>&1; then
+			for wif in $(iw dev 2>/dev/null | awk '/Interface/{print $2}'); do
+				for m in $(iw dev "$wif" station dump 2>/dev/null | awk '/Station/{print $2}'); do
+					assoc="$assoc${assoc:+,}$m"
+				done
+			done
 		fi
-		exitip=""
-		[ "$proxy_up" = true ] && exitip=$(curl -fs --socks5-hostname 127.0.0.1:$SOCKS_PORT --max-time 8 https://api.ipify.org 2>/dev/null)
+		[ -n "$assoc" ] || assoc=$(awk '{print $2}' /tmp/dhcp.leases 2>/dev/null | paste -sd, -)
+		clients=0; [ -n "$assoc" ] && clients=$(printf '%s' "$assoc" | tr ',' '\n' | grep -c .)
 
-		# ── clients ──
-		clients=$(/usr/bin/meownetvpn clients 2>/dev/null)
-		nclients=$(printf '%s\n' "$clients" | grep -c '|')
-		nrouted=$(printf '%s\n' "$clients" | awk -F'|' '$4>0' | grep -c '|')
-
-		# ── traffic: cumulative WAN + tunnel counters, and speed since last beat ──
-		wrx=0; wtx=0
-		[ -r "/sys/class/net/$wandev/statistics/rx_bytes" ] && read wrx < "/sys/class/net/$wandev/statistics/rx_bytes"
-		[ -r "/sys/class/net/$wandev/statistics/tx_bytes" ] && read wtx < "/sys/class/net/$wandev/statistics/tx_bytes"
-		trx=0; ttx=0
-		[ -r "/sys/class/net/$TUN/statistics/rx_bytes" ] && read trx < "/sys/class/net/$TUN/statistics/rx_bytes"
-		[ -r "/sys/class/net/$TUN/statistics/tx_bytes" ] && read ttx < "/sys/class/net/$TUN/statistics/tx_bytes"
-		now=$(date +%s); pf="$STATE_DIR/hb.prev"; pt=0; pwrx=0; pwtx=0; ptrx=0; pttx=0
-		[ -f "$pf" ] && read pt pwrx pwtx ptrx pttx < "$pf"
-		echo "$now $wrx $wtx $trx $ttx" > "$pf"
-		dt=$((now-pt)); [ "$dt" -lt 1 ] && dt=1
-		wrxr=0; wtxr=0; trxr=0; ttxr=0
-		if [ "$pt" -gt 0 ]; then
-			[ "$wrx" -ge "$pwrx" ] && wrxr=$(((wrx-pwrx)/dt)); [ "$wtx" -ge "$pwtx" ] && wtxr=$(((wtx-pwtx)/dt))
-			[ "$trx" -ge "$ptrx" ] && trxr=$(((trx-ptrx)/dt)); [ "$ttx" -ge "$pttx" ] && ttxr=$(((ttx-pttx)/dt))
+		# tunnel liveness + a real transport probe for proxy_up and its latency.
+		proxy_up=0; proxy_host=$(srv_get "$(active_server)" address); lat=-1
+		if netstat -tln 2>/dev/null | grep -q "127.0.0.1:$SOCKS_PORT "; then
+			t=$(curl -fs --socks5-hostname 127.0.0.1:$SOCKS_PORT --max-time 8 -o /dev/null -w '%{http_code} %{time_total}' http://www.gstatic.com/generate_204 2>/dev/null)
+			case "$t" in 2??\ *|3??\ *) proxy_up=1; lat=$(printf '%s' "${t#* }" | awk '{printf "%d", $1*1000}') ;; esac
 		fi
+		# dns_up: resolver answers (domain routing depends on it)
+		dns_up=0; pgrep dnsmasq >/dev/null 2>&1 && nslookup gstatic.com 127.0.0.1 >/dev/null 2>&1 && dns_up=1
 
-		# ── lists / health ──
-		subnets=—; [ -r "$STATE_DIR/subnets.count" ] && read -r subnets < "$STATE_DIR/subnets.count"
-		case "$subnets" in ''|*[!0-9]*) subnets=0 ;; esac
-		hb=$(/usr/bin/meownetvpn health 2>/dev/null)
-		hbad=$(printf '%s\n' "$hb" | awk -F'|' '$3=="bad"' | grep -c '|')
-		hwarn=$(printf '%s\n' "$hb" | awk -F'|' '$3=="warn"' | grep -c '|')
+		# cumulative WAN counters — the console turns the delta into Mbps
+		wan_rx=0; wan_tx=0
+		[ -r "/sys/class/net/$wandev/statistics/rx_bytes" ] && read wan_rx < "/sys/class/net/$wandev/statistics/rx_bytes"
+		[ -r "/sys/class/net/$wandev/statistics/tx_bytes" ] && read wan_tx < "/sys/class/net/$wandev/statistics/tx_bytes"
 
-		json='{'
-		json="$json\"id\":\"$(je "$id")\",\"hostname\":\"$(je "$host")\",\"model\":\"$(je "$model")\""
-		json="$json,\"openwrt\":\"$(je "$owrt")\",\"version\":\"$(je "$VERSION")\",\"ts\":$now,\"uptime\":$up"
-		json="$json,\"wan_ip\":\"$(je "$wanip")\",\"lan\":\"$(je "$lan")\""
-		json="$json,\"enabled\":$en,\"proxy_up\":$proxy_up,\"xray\":$xray,\"tun2socks\":$hev,\"socks_listen\":$listen"
-		json="$json,\"exit\":\"$(je "$exlabel")\",\"exit_host\":\"$(je "$exaddr")\",\"exit_ip\":\"$(je "$exitip")\""
-		json="$json,\"clients\":$nclients,\"clients_routed\":$nrouted"
-		json="$json,\"wan_rx\":$wrx,\"wan_tx\":$wtx,\"tun_rx\":$trx,\"tun_tx\":$ttx"
-		json="$json,\"wan_rx_bps\":$wrxr,\"wan_tx_bps\":$wtxr,\"tun_rx_bps\":$trxr,\"tun_tx_bps\":$ttxr"
-		json="$json,\"subnets\":$subnets,\"health_bad\":$hbad,\"health_warn\":$hwarn}"
-
-		if [ "$mode" = print ]; then printf '%s\n' "$json"; exit 0; fi
-		[ -n "$url" ] || { echo "no report_url set"; exit 1; }
-		hdr_auth=""; [ -n "$tok" ] && hdr_auth="-H Authorization:Bearer=$tok"
-		# --noproxy: never route the beat through an http_proxy env either.
-		rc=$(curl -s -o /tmp/hb.resp -w '%{http_code}' --max-time 20 \
-			-X POST "$url" \
-			-H "Content-Type: application/json" \
-			-H "X-Router-Id: $id" \
-			${tok:+-H "Authorization: Bearer $tok"} \
-			--data "$json" 2>/dev/null)
+		if [ "$mode" = print ]; then
+			printf 'hostname=%s\nmac=%s\nversion=%s\nrole=%s\nuptime=%s\nwan_ip=%s\nlan_ip=%s\nwan_iface=%s\nclients=%s\nproxy_up=%s\nproxy_host=%s\nproxy_latency_ms=%s\ndns_up=%s\nwan_rx=%s\nwan_tx=%s\nmesh_nodes=0\nassoc_macs=%s\n' \
+				"$host" "$mac" "$VERSION" "$role" "$up" "$wanip" "$lanip" "$wandev" "$clients" "$proxy_up" "$proxy_host" "$lat" "$dns_up" "$wan_rx" "$wan_tx" "$assoc"
+			exit 0
+		fi
+		rc=$(curl -s -o /tmp/hb.resp -w '%{http_code}' --max-time 20 -X POST "$url" \
+			--data-urlencode "hostname=$host" \
+			--data-urlencode "mac=$mac" \
+			--data-urlencode "version=$VERSION" \
+			--data-urlencode "role=$role" \
+			--data-urlencode "uptime=$up" \
+			--data-urlencode "wan_ip=$wanip" \
+			--data-urlencode "lan_ip=$lanip" \
+			--data-urlencode "wan_iface=$wandev" \
+			--data-urlencode "clients=$clients" \
+			--data-urlencode "proxy_up=$proxy_up" \
+			--data-urlencode "proxy_host=$proxy_host" \
+			--data-urlencode "proxy_latency_ms=$lat" \
+			--data-urlencode "dns_up=$dns_up" \
+			--data-urlencode "wan_rx=$wan_rx" \
+			--data-urlencode "wan_tx=$wan_tx" \
+			--data-urlencode "mesh_nodes=0" \
+			--data-urlencode "assoc_macs=$assoc" 2>/dev/null)
 		case "$rc" in
-			2??) [ "$mode" = -v ] && echo "ok $rc" ;;
-			*)   logger -t meownetvpn "heartbeat POST $url -> ${rc:-000}"; [ "$mode" = -v ] && echo "failed $rc: $(head -c 120 /tmp/hb.resp 2>/dev/null)" ;;
+			2??) [ "$mode" = -v ] && echo "ok $rc $(head -c 80 /tmp/hb.resp 2>/dev/null)" ;;
+			*)   logger -t meownetvpn "heartbeat POST $url -> ${rc:-000}"; [ "$mode" = -v ] && echo "failed ${rc:-000}: $(head -c 120 /tmp/hb.resp 2>/dev/null)" ;;
 		esac
 		rm -f /tmp/hb.resp
 		;;
