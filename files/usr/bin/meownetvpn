@@ -181,7 +181,12 @@ case "$1" in
 				a=$(( (now - m) / 86400 )); [ "$a" -gt "$old" ] && old=$a
 			done
 		fi
-		if [ "$old" -gt 14 ]; then emit lists warn "Списки не обновлялись $old дн." "update"
+		nolist=""
+		for n in $(uci -q get $CONF.settings.community_lists); do
+			ls /etc/meownetvpn/lists/"$n".*.lst >/dev/null 2>&1 || nolist="$nolist $n"
+		done
+		if [ -n "$nolist" ]; then emit lists bad "Списки не скачаны:$nolist — этот трафик идёт мимо VPN" "update"
+		elif [ "$old" -gt 14 ]; then emit lists warn "Списки не обновлялись $old дн." "update"
 		else emit lists ok "Списки обновлялись $old дн. назад"; fi
 		# Strikes are PER-TUNNEL since the watchdog stopped restarting the whole
 		# service for one flaky group: /tmp/meownetvpn.wd/<key>. The single global
@@ -1145,6 +1150,14 @@ case "$1" in
 		host=$(uci -q get system.@system[0].hostname)
 		mac=$(cat /sys/class/net/br-lan/address 2>/dev/null | tr 'A-Z' 'a-z')
 		role=$(cat /etc/meownet-role 2>/dev/null)
+		# mesh11sd node: MRP (portal, has upstream) = main, anything else = node
+		if [ -z "$role" ] && command -v mesh11sd >/dev/null 2>&1; then
+			case "$(mesh11sd status 2>/dev/null | jsonfilter -e '@.setup.node_type' 2>/dev/null)" in
+				MRP|MBP) role=main ;;
+				'') ;;
+				*) role=node ;;
+			esac
+		fi
 		up=0; read up _ < /proc/uptime 2>/dev/null; up=${up%.*}
 		wandev=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++)if($i=="dev"){print $(i+1);exit}}')
 		wanip=$(ip -4 -o addr show "$wandev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
@@ -1152,16 +1165,29 @@ case "$1" in
 
 		# associated LAN clients: wifi stations if iw is present (matches the
 		# console's connect/disconnect diffing), else DHCP-lease MACs as a fallback.
-		assoc=""
+		# Only AP interfaces: 802.11s mesh peers are other routers, not clients —
+		# counting them would fire false "connected/disconnected" alerts.
+		assoc=""; mesh_nodes=0; have_ap=0
 		if command -v iw >/dev/null 2>&1; then
-			for wif in $(iw dev 2>/dev/null | awk '/Interface/{print $2}'); do
-				for m in $(iw dev "$wif" station dump 2>/dev/null | awk '/Station/{print $2}'); do
-					assoc="$assoc${assoc:+,}$m"
-				done
+			for wt in $(iw dev 2>/dev/null | awk '/Interface/{i=$2} /type/{print i":"$2}'); do
+				wif=${wt%%:*}
+				case "${wt#*:}" in
+				AP)
+					have_ap=1
+					for m in $(iw dev "$wif" station dump 2>/dev/null | awk '/Station/{print $2}'); do
+						assoc="$assoc${assoc:+,}$m"
+					done ;;
+				mesh)	# other mesh nodes reachable over the backhaul (multi-hop paths)
+					n=$(iw dev "$wif" mpath dump 2>/dev/null | awk 'NR>1 && $2!="00:00:00:00:00:00"{print $1}' | sort -u | grep -c .)
+					[ "$n" -gt "$mesh_nodes" ] && mesh_nodes=$n ;;
+				esac
 			done
 		fi
 		# join lease MACs with awk, not `paste` — busybox 25.x omits the paste applet
-		[ -n "$assoc" ] || assoc=$(awk '{ out = out (out?",":"") $2 } END{ print out }' /tmp/dhcp.leases 2>/dev/null)
+		# only when the router has no AP configured at all: during a wifi reload the
+		# AP interfaces vanish for a moment and wired lease MACs would then show up
+		# as wifi joins/leaves in the console
+		[ -n "$assoc" ] || [ "$have_ap" = 1 ] || uci -q show wireless | grep -q "\.mode='ap'" || assoc=$(awk '{ out = out (out?",":"") $2 } END{ print out }' /tmp/dhcp.leases 2>/dev/null)
 		clients=0; [ -n "$assoc" ] && clients=$(printf '%s' "$assoc" | tr ',' '\n' | grep -c .)
 
 		# tunnel liveness + a real transport probe for proxy_up and its latency.
@@ -1179,8 +1205,8 @@ case "$1" in
 		[ -r "/sys/class/net/$wandev/statistics/tx_bytes" ] && read wan_tx < "/sys/class/net/$wandev/statistics/tx_bytes"
 
 		if [ "$mode" = print ]; then
-			printf 'hostname=%s\nmac=%s\nversion=%s\nrole=%s\nuptime=%s\nwan_ip=%s\nlan_ip=%s\nwan_iface=%s\nclients=%s\nproxy_up=%s\nproxy_host=%s\nproxy_latency_ms=%s\ndns_up=%s\nwan_rx=%s\nwan_tx=%s\nmesh_nodes=0\nassoc_macs=%s\n' \
-				"$host" "$mac" "$VERSION" "$role" "$up" "$wanip" "$lanip" "$wandev" "$clients" "$proxy_up" "$proxy_host" "$lat" "$dns_up" "$wan_rx" "$wan_tx" "$assoc"
+			printf 'hostname=%s\nmac=%s\nversion=%s\nrole=%s\nuptime=%s\nwan_ip=%s\nlan_ip=%s\nwan_iface=%s\nclients=%s\nproxy_up=%s\nproxy_host=%s\nproxy_latency_ms=%s\ndns_up=%s\nwan_rx=%s\nwan_tx=%s\nmesh_nodes=%s\nassoc_macs=%s\n' \
+				"$host" "$mac" "$VERSION" "$role" "$up" "$wanip" "$lanip" "$wandev" "$clients" "$proxy_up" "$proxy_host" "$lat" "$dns_up" "$wan_rx" "$wan_tx" "$mesh_nodes" "$assoc"
 			exit 0
 		fi
 		rc=$(curl -s -o /tmp/hb.resp -w '%{http_code}' --max-time 20 -X POST "$url" \
@@ -1199,7 +1225,7 @@ case "$1" in
 			--data-urlencode "dns_up=$dns_up" \
 			--data-urlencode "wan_rx=$wan_rx" \
 			--data-urlencode "wan_tx=$wan_tx" \
-			--data-urlencode "mesh_nodes=0" \
+			--data-urlencode "mesh_nodes=$mesh_nodes" \
 			--data-urlencode "assoc_macs=$assoc" 2>/dev/null)
 		case "$rc" in
 			2??) [ "$mode" = -v ] && echo "ok $rc $(head -c 80 /tmp/hb.resp 2>/dev/null)" ;;

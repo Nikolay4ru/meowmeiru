@@ -575,7 +575,28 @@ start_service() {
 	# rebuild), and on a cold start the only thing that shortens it is applying at
 	# once. It stays backgrounded because holding start_service open does not hold
 	# any packet back — it would only stall boot behind apply's lock.
-	( /etc/meownetvpn/update-lists.sh apply; log "started: $(tunnels | wc -l) tunnel(s)" ) &
+	( /etc/meownetvpn/update-lists.sh apply; log "started: $(tunnels | wc -l) tunnel(s)"
+	  # Community lists are otherwise only fetched by the nightly cron, so a fresh
+	  # install (or a wiped overlay) ran for up to a day with just the hand-added
+	  # domains in the set: Telegram's apps connect to hardcoded IPs, never touch
+	  # DNS, and silently went out over the blocked WAN. Fetch whatever enabled
+	  # list has no cached file yet, through the tunnel once its SOCKS is up.
+	  missing_lists || exit 0
+	  for try in 1 2 3 4 5; do
+		sleep $((try * 10))
+		/etc/meownetvpn/update-lists.sh download >/dev/null 2>&1
+		missing_lists || { log "initial list download done"; exit 0; }
+	  done
+	  log "initial list download failed — lists will retry on the nightly cron" ) &
+}
+
+# 0 = some enabled community list (default tunnel or any group) has no cached file
+missing_lists() {
+	local n g
+	for n in $(uci_get community_lists) $(for g in $(uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=group$/\1/p"); do uci -q get "$CONF.$g.community_lists"; done); do
+		ls /etc/meownetvpn/lists/"$n".*.lst >/dev/null 2>&1 || return 0
+	done
+	return 1
 }
 
 stop_service() {
