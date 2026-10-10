@@ -54,12 +54,15 @@ community_entries() {
 		porn)       echo "domain:Categories/porn.lst" ;;
 		geoblock)   echo "domain:Categories/geoblock.lst" ;;
 		block)      echo "domain:Categories/block.lst" ;;
+		# Local list: itdoginfo has no game lists, so the files ship in lists/ with
+		# the installer and self-update. Nothing to download — known, but no entries.
+		phasmophobia) return 0 ;;
 		*) return 1 ;;
 	esac
 }
 available_lists() {
 	echo "telegram meta twitter discord cloudflare hetzner digitalocean roblox \
-youtube tiktok google_ai google_play hdrezka russia_inside russia_outside anime news porn geoblock block"
+youtube tiktok google_ai google_play hdrezka russia_inside russia_outside anime news porn geoblock block phasmophobia"
 }
 
 dl() { curl -fs --max-time 60 --proxy "$PROXY" -o "$2" "$1" 2>/dev/null; }

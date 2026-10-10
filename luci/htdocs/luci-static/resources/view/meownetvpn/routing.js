@@ -6,7 +6,7 @@
 
 var LISTS=['telegram','meta','twitter','discord','roblox','cloudflare','hetzner','digitalocean',
   'youtube','tiktok','google_ai','google_play','hdrezka','russia_inside','russia_outside',
-  'anime','news','porn','geoblock','block'];
+  'anime','news','porn','geoblock','block','phasmophobia'];
 
 // Whatever lands in these lists is interpolated verbatim by update-lists.sh into
 // `server=/$d/…` and `nftset=/$d/…`, and dnsmasq is restarted without a --test.

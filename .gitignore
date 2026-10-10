@@ -2,6 +2,8 @@
 *.bak
 files/etc/meownetvpn/lists/*.lst
 !files/etc/meownetvpn/lists/exclude.lst
+!files/etc/meownetvpn/lists/phasmophobia.domain.lst
+!files/etc/meownetvpn/lists/phasmophobia.subnet.lst
 
 # внутренние заметки: содержат адреса и топологию сети — не публикуем
 .DS_Store

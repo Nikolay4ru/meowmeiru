@@ -574,6 +574,8 @@ case "$1" in
 			"files/etc/meownetvpn/update-lists.sh:ul" \
 			"files/etc/meownetvpn/watchdog.sh:wd" \
 			"files/etc/meownetvpn/lists/exclude.lst:excl" \
+			"files/etc/meownetvpn/lists/phasmophobia.domain.lst:l_phasmo_d" \
+			"files/etc/meownetvpn/lists/phasmophobia.subnet.lst:l_phasmo_s" \
 			"files/usr/bin/meownetvpn:cli" \
 			"luci/htdocs/luci-static/resources/meownetvpn/lib.js:lib" \
 			"luci/htdocs/luci-static/resources/view/meownetvpn/overview.js:v_overview" \
@@ -606,6 +608,7 @@ case "$1" in
 		cp "$d/initd" /etc/init.d/meownetvpn; cp "$d/ul" /etc/meownetvpn/update-lists.sh
 		cp "$d/wd" /etc/meownetvpn/watchdog.sh; cp "$d/cli" /usr/bin/meownetvpn
 		mkdir -p /etc/meownetvpn/lists; cp "$d/excl" /etc/meownetvpn/lists/exclude.lst
+		cp "$d/l_phasmo_d" /etc/meownetvpn/lists/phasmophobia.domain.lst; cp "$d/l_phasmo_s" /etc/meownetvpn/lists/phasmophobia.subnet.lst
 		mkdir -p /www/luci-static/resources/meownetvpn /www/luci-static/resources/view/meownetvpn
 		cp "$d/lib" /www/luci-static/resources/meownetvpn/lib.js
 		for v in overview servers routing diagnostics settings; do cp "$d/v_$v" "/www/luci-static/resources/view/meownetvpn/$v.js"; done

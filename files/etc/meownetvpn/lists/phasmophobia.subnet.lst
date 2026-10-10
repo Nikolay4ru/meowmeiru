@@ -1,0 +1,9 @@
+# Photon (Exit Games) — name/master servers, announced via Cloudflare AS209242
+216.120.180.0/23
+185.124.66.0/24
+64.39.233.0/24
+64.39.236.0/24
+91.199.81.0/24
+# Unity / Vivox voice — control (HTTPS) and media (UDP), AS35028
+85.236.96.0/21
+85.236.104.0/23

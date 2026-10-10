@@ -16,6 +16,12 @@ HEV_VER="${HEV_VER:-2.7.5}"
 
 say() { echo "[meownetvpn] $1"; }
 err() { echo "[meownetvpn] ERROR: $1" >&2; exit 1; }
+# Every download in this script goes through dl(). It was called ~10 times and
+# never defined, so `set -e` + `2>/dev/null` turned each fetch into a silent
+# failure: the installer died at "could not fetch xray" on a box that could reach
+# the mirror fine. curl first (it is a dependency below), busybox wget as the
+# fallback for the window before deps are in and for a curl that will not run.
+dl() { curl -fsSL --max-time 180 -o "$2" "$1" 2>/dev/null || wget -qO "$2" "$1"; }
 
 [ -f /etc/openwrt_release ] || err "not an OpenWrt system"
 command -v uci >/dev/null || err "uci not found"
@@ -159,6 +165,14 @@ say "installing deps (nftables, dnsmasq-full, kmod-tun, ca-bundle, curl, ip-full
 pm_update
 # ip-full (iproute2) is REQUIRED — busybox `ip` cannot do `ip rule` / routing tables / tuntap
 pm_install kmod-tun nftables curl ca-bundle ip-full
+# opkg installs the newest curl but leaves an older libcurl4 in place (seen on
+# 24.10.5: curl 8.22 over libcurl4 8.12 -> "symbol not found" on every call).
+# dl() would quietly fall back to wget, but the runtime (update-lists.sh) relies
+# on curl, so pull the library to the same version when the binary cannot run.
+if ! curl --version >/dev/null 2>&1 && [ "$PM" = opkg ]; then
+	say "curl does not run (libcurl4 out of sync) — upgrading libcurl4…"
+	opkg upgrade libcurl4 >/dev/null 2>&1 || true
+fi
 # dnsmasq-full needed for nftset= domain routing; replace plain dnsmasq.
 if dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'no-nftset'; then
 	say "swapping dnsmasq -> dnsmasq-full (needed for domain lists)..."
@@ -265,6 +279,10 @@ fetch_repo luci/root/usr/share/rpcd/acl.d/luci-app-meownetvpn.json    /usr/share
 # module version file (used by update-check / self-update)
 dl "$REPO/VERSION" /etc/meownetvpn/VERSION 2>/dev/null || echo "1.1.0" > /etc/meownetvpn/VERSION
 mkdir -p /etc/meownetvpn/lists
+# local community lists (no upstream at itdoginfo) ship with the module
+for l in phasmophobia.domain phasmophobia.subnet; do
+	fetch_file "etc/meownetvpn/lists/$l.lst" "/etc/meownetvpn/lists/$l.lst" 644
+done
 
 # ── register with the package manager so it shows in LuCI (removable/upgradeable) ──
 # Only opkg keeps a hand-editable text db we can add a synthetic entry to. apk's db
