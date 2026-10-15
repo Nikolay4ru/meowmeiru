@@ -15,6 +15,9 @@ REPO_RAW="${MEOWNETVPN_REPO:-https://raw.githubusercontent.com/Nikolay4ru/meowme
 # in RU), then direct as a fallback.
 repo_dl() { curl -fs --proxy "$PROXY" --max-time 60 -o "$2" "$REPO_RAW/$1" 2>/dev/null || curl -fs --max-time 60 -o "$2" "$REPO_RAW/$1" 2>/dev/null; }
 repo_cat() { curl -fs --proxy "$PROXY" --max-time 15 "$REPO_RAW/$1" 2>/dev/null || curl -fs --max-time 15 "$REPO_RAW/$1" 2>/dev/null; }
+# ver_newer A B: true when version A is strictly newer than B (x.y.z, numeric)
+ver_newer() { awk -v a="$1" -v b="$2" 'BEGIN{ n=split(a,x,"."); m=split(b,y,".");
+	for(i=1;i<=(n>m?n:m);i++){ if(x[i]+0>y[i]+0) exit 0; if(x[i]+0<y[i]+0) exit 1 } exit 1 }'; }
 
 # ── server helpers (mirror init.d) ──
 server_list() { uci show "$CONF" 2>/dev/null | sed -n "s/^$CONF\.\([^.=]*\)=server$/\1/p"; }
@@ -638,8 +641,9 @@ case "$1" in
 		echo "current: $VERSION"
 		echo "latest: ${remote:-unknown}"
 		if [ -z "$remote" ]; then echo "status: cannot reach github (tunnel down?)"
+		elif ver_newer "$remote" "$VERSION"; then echo "status: update-available"
 		elif [ "$remote" = "$VERSION" ]; then echo "status: up-to-date"
-		else echo "status: update-available"; fi
+		else echo "status: ahead"; fi
 		;;
 	self-update)
 		echo "fetching latest meownetvpn from github (via tunnel)…"
@@ -703,7 +707,9 @@ case "$1" in
 		# cron: self-update only if enabled AND a newer version exists
 		[ "$(uci -q get $CONF.settings.auto_update)" = "1" ] || exit 0
 		remote=$(repo_cat VERSION | tr -d ' \r\n\t')
-		[ -n "$remote" ] && [ "$remote" != "$VERSION" ] || exit 0
+		# strictly newer only: a router running a release that is not in main yet
+		# (a test branch) used to be "updated" back to the older main every night
+		[ -n "$remote" ] && ver_newer "$remote" "$VERSION" || exit 0
 		logger -t meownetvpn "auto-update $VERSION -> $remote"
 		/usr/bin/meownetvpn self-update >/dev/null 2>&1
 		;;

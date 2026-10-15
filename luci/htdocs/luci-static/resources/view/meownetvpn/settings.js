@@ -80,6 +80,7 @@ return lib.page({
               };
               if(p.status==='update-available') say('mk-warn',_('доступно: ')+(p.latest||''));
               else if(p.status==='up-to-date') say('mk-up',_('актуальная версия'));
+              else if(p.status==='ahead') say('mk-up',_('установлена версия новее, чем на GitHub: ')+(p.latest||''));
               else say('mk-down',_('GitHub недоступен'));
               return null;
             });
