@@ -60,7 +60,7 @@ Usage: meownetvpn <command>
   route-del <домен>          drop a domain rule, no restart
   version                    show module version
   update-check               check github for a newer version
-  self-update                download + install the latest version (via tunnel)
+  self-update [start|status]  download + install the latest version (via tunnel); start = in background
   status                     show service + tunnel health
   test                       check tunnel exit IP + a proxied domain
   ping                       latency to server + through the tunnel
@@ -648,8 +648,29 @@ case "$1" in
 		else echo "status: ahead"; fi
 		;;
 	self-update)
+		# LuCI runs `self-update start` and polls `self-update status`. Called in
+		# the foreground the update outlived rpcd's 30 s exec timeout (downloads go
+		# through the tunnel, then a restart): the page reported an error for an
+		# update that had gone through, and rpcd may kill it half-way through the
+		# copies. The log lives outside $STATE_DIR so the restart cannot touch it.
+		SU=/tmp/meownetvpn-selfupdate.log; SUPID=/tmp/meownetvpn-selfupdate.pid
+		case "$2" in
+			status) cat "$SU" 2>/dev/null || true; exit 0 ;;
+			start)
+				if [ -f "$SUPID" ] && kill -0 "$(cat "$SUPID" 2>/dev/null)" 2>/dev/null; then echo "already running"; exit 0; fi
+				: > "$SU"
+				( trap '' HUP; exec "$0" self-update run ) </dev/null >>"$SU" 2>&1 &
+				echo "started"; exit 0 ;;
+		esac
+		echo $$ > "$SUPID"
+		su_end() { echo "status: $1"; rm -f "$SUPID"; }
+		# rpcd hands its children umask 077: every file below came out 0600 and
+		# uhttpd answers 403 for anything that is not world-readable — the whole
+		# panel broke on the first update made from LuCI. Set it, then chmod anyway.
+		umask 022
+		echo "step: download"
 		echo "fetching latest meownetvpn from github (via tunnel)…"
-		d=/tmp/mnup; rm -rf "$d"; mkdir -p "$d"; ok=1
+		d=/tmp/mnup; rm -rf "$d"; mkdir -p "$d"; ok=1; i=0
 		# (file repo-path : local)
 		for pair in \
 			"files/etc/init.d/meownetvpn:initd" \
@@ -668,8 +689,10 @@ case "$1" in
 			"luci/root/usr/share/luci/menu.d/luci-app-meownetvpn.json:menu" \
 			"luci/root/usr/share/rpcd/acl.d/luci-app-meownetvpn.json:acl" \
 			"VERSION:ver"; do
+			i=$((i+1)); echo "  [$i/16] ${pair%%:*}"
 			repo_dl "${pair%%:*}" "$d/${pair##*:}" && [ -s "$d/${pair##*:}" ] || { echo "  download failed: ${pair%%:*}"; ok=0; }
 		done
+		echo "step: check"
 		# Sanity: shell scripts must parse and the LuCI files must look like ours.
 		# Every check says WHAT failed — a silent ok=0 made a broken update
 		# indistinguishable from a network problem for three releases.
@@ -686,7 +709,8 @@ case "$1" in
 			[0-9]*.[0-9]*.[0-9]*) : ;;
 			*) echo "  в VERSION не номер версии"; ok=0 ;;
 		esac
-		[ "$ok" = 1 ] || { echo "обновление отменено (см. причину выше) — осталась версия $VERSION"; rm -rf "$d"; exit 1; }
+		[ "$ok" = 1 ] || { echo "обновление отменено (см. причину выше) — осталась версия $VERSION"; rm -rf "$d"; su_end failed; exit 1; }
+		echo "step: install"
 		cp "$d/initd" /etc/init.d/meownetvpn; cp "$d/ul" /etc/meownetvpn/update-lists.sh
 		cp "$d/wd" /etc/meownetvpn/watchdog.sh; cp "$d/cli" /usr/bin/meownetvpn
 		mkdir -p /etc/meownetvpn/lists; cp "$d/excl" /etc/meownetvpn/lists/exclude.lst
@@ -698,12 +722,17 @@ case "$1" in
 		cp "$d/menu" /usr/share/luci/menu.d/luci-app-meownetvpn.json
 		cp "$d/acl" /usr/share/rpcd/acl.d/luci-app-meownetvpn.json
 		mkdir -p /etc/meownetvpn; cp "$d/ver" "$VER_FILE"
-		chmod +x /etc/init.d/meownetvpn /usr/bin/meownetvpn /etc/meownetvpn/*.sh
+		chmod 755 /etc/init.d/meownetvpn /usr/bin/meownetvpn /etc/meownetvpn/*.sh
+		chmod 644 /www/luci-static/resources/meownetvpn/lib.js /www/luci-static/resources/view/meownetvpn/*.js \
+			/usr/share/luci/menu.d/luci-app-meownetvpn.json /usr/share/rpcd/acl.d/luci-app-meownetvpn.json \
+			"$VER_FILE" /etc/meownetvpn/lists/*.lst 2>/dev/null
 		sed -i "s/^Version: .*/Version: $(cat "$VER_FILE")/" /usr/lib/opkg/info/meownetvpn.control 2>/dev/null
 		rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null; /etc/init.d/rpcd reload >/dev/null 2>&1
+		echo "step: restart"
 		/etc/init.d/meownetvpn restart >/dev/null 2>&1
 		rm -rf "$d"
 		echo "updated to $(cat "$VER_FILE")"
+		su_end done
 		;;
 	update-auto)
 		# cron: self-update only if enabled AND a newer version exists

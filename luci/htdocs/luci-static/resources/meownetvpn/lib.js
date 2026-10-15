@@ -322,6 +322,71 @@ var Base = baseclass.extend({
     });
   },
 
+  // URLs of our own LuCI files exactly as luci.js requests them. The ?v= it adds
+  // is the LuCI build, which an update of this module does not change, and
+  // uhttpd sends no Cache-Control: browsers kept running the old pages after an
+  // update (heuristic caching), and only an incognito window showed the new ones.
+  assetUrls: function(){
+    var env=(window.L&&L.env)||{}, base=env.base_url||'/luci-static/resources',
+        v=env.resource_version?'?v='+env.resource_version:'';
+    return ['meownetvpn/lib','view/meownetvpn/overview','view/meownetvpn/servers',
+      'view/meownetvpn/routing','view/meownetvpn/settings','view/meownetvpn/diagnostics']
+      .map(function(p){ return base+'/'+p+'.js'+v; });
+  },
+
+  // replace the browser's cached copies with what the router serves now
+  refreshAssets: function(){
+    if(!window.fetch) return Promise.resolve();
+    return Promise.all(this.assetUrls().map(function(u){
+      return fetch(u,{cache:'reload',credentials:'same-origin'}).catch(function(){}); }));
+  },
+
+  // once per tab: if the router has newer copies than the cache this page was
+  // built from (an update made elsewhere), refresh them and reload once
+  checkStale: function(){
+    var self=this;
+    try{ if(!window.fetch || sessionStorage.getItem('mk-fresh')) return; sessionStorage.setItem('mk-fresh','1'); }
+    catch(e){ return; }
+    var etag=function(u,mode){ return fetch(u,{cache:mode,credentials:'same-origin'})
+      .then(function(r){ return r.headers.get('ETag')||''; }).catch(function(){ return ''; }); };
+    var urls=self.assetUrls(), stale=false;
+    return urls.reduce(function(p,u){ return p.then(function(){
+      return etag(u,'force-cache').then(function(a){ return etag(u,'no-cache').then(function(b){
+        if(a && b && a!==b) stale=true; }); }); }); }, Promise.resolve())
+      .then(function(){ if(stale) location.reload(); });
+  },
+
+  // follow a background `self-update start`: the current step, then a cache refresh
+  // and a reload — or the log when it failed
+  pollSelfUpdate: function(stateEl, outEl){
+    var self=this, t0=Date.now();
+    var say=function(cls,txt){ stateEl.innerHTML=''; stateEl.appendChild(E('b',{'class':cls},[' '+txt])); };
+    return new Promise(function(resolve){
+      var tick=function(){
+        self.run(['self-update','status']).then(function(r){
+          // rpcd reloads itself during the install: a failed poll or two is expected
+          var log=r.code===0?r.out:'', st=(log.match(/^status: (\w+)/m)||[])[1];
+          var steps=log.match(/^step: \w+/mg)||[], step=steps.length?steps[steps.length-1].slice(6):'';
+          var cnt=(log.match(/\[\d+\/\d+\]/g)||[]).pop();
+          if(log && outEl){ outEl.style.display='block'; outEl.textContent=log; }
+          if(st==='done'){
+            say('mk-up',_('обновлено, перезагружаю страницу…'));
+            return self.refreshAssets().then(function(){
+              try{ sessionStorage.removeItem('mk-fresh'); }catch(e){}
+              setTimeout(function(){ location.reload(); }, 1500); resolve(null); });
+          }
+          if(st==='failed'){ say('mk-down',_('обновление не удалось — причина в журнале ниже')); return resolve(null); }
+          if(Date.now()-t0>300000){ say('mk-down',_('обновление идёт дольше 5 минут — смотрите журнал ниже')); return resolve(null); }
+          say('mk-warn', step==='download' ? _('скачиваю файлы')+(cnt?' '+cnt.replace(/\[(\d+)\/(\d+)\]/,'$1 из $2'):'')+'…'
+            : step==='check' ? _('проверяю файлы…') : step==='install' ? _('устанавливаю…')
+            : step==='restart' ? _('перезапускаю VPN (несколько секунд)…') : _('запускаю обновление…'));
+          setTimeout(tick,1500);
+        });
+      };
+      setTimeout(tick,800);
+    });
+  },
+
   fmtBytes: function(n){ n=+n||0;
     if(n>=1073741824) return (n/1073741824).toFixed(2)+' ГБ';
     if(n>=1048576)    return (n/1048576).toFixed(1)+' МБ';
@@ -589,7 +654,7 @@ var Base = baseclass.extend({
     var self=this;
     this._badge=E('span',{'class':'mk-badge'},'…');
     // every page carries the badge, not only those that poll the status
-    setTimeout(function(){ self.refreshStatus(); }, 0);
+    setTimeout(function(){ self.refreshStatus(); self.checkStale(); }, 0);
     this.exec(['version']).then(function(v){ v=(v||'').trim(); ver.textContent=v?('v'+v):''; });
     return E('div',{'class':'mk-head'},[
       E('h2',{},'meowMieru'),

@@ -86,9 +86,18 @@ return lib.page({
             });
           }),
           self.mkBtn('updinst','cbi-button-positive',_('Обновить сейчас'), function(){
-            self._upd.innerHTML=' '+_('обновляю через туннель…');
-            return self.exec(['self-update']).then(function(t){ setTimeout(function(){ location.reload(); }, 2500); return t; });
-          }, out),
+            // the button installs whatever main holds: say so when that is not newer
+            self._upd.innerHTML=' '+_('проверяю версию…');
+            return self.exec(['update-check']).then(function(t){
+              var p=self.parse(t), q;
+              if(p.status==='update-available') q=_('Обновить до %s? В конце VPN перезапустится на несколько секунд.').format(p.latest);
+              else if(p.status==='up-to-date') q=_('Уже стоит последняя версия (%s). Переустановить? VPN перезапустится на несколько секунд.').format(p.latest);
+              else if(p.status==='ahead') q=_('На GitHub версия %s — СТАРЕЕ установленной. Всё равно поставить её?').format(p.latest);
+              else { self._upd.innerHTML=' '+_('GitHub недоступен'); return null; }
+              if(!confirm(q)){ self._upd.innerHTML=''; return null; }
+              return self.run(['self-update','start']).then(function(){ return self.pollSelfUpdate(self._upd, out); });
+            });
+          }),
           self._upd
         ]),
         out
