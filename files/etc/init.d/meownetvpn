@@ -551,6 +551,13 @@ bring_up_tunnel() {
 }
 
 start_service() {
+	# A self-update started from LuCI by a release before 3.3.0 copies our files
+	# with rpcd's umask 077 — 0600, which uhttpd answers with 403 — and then
+	# restarts this service, i.e. runs THIS (new) script: repair them here.
+	chmod 644 /www/luci-static/resources/meownetvpn/*.js /www/luci-static/resources/view/meownetvpn/*.js \
+		/usr/share/luci/menu.d/luci-app-meownetvpn.json /usr/share/rpcd/acl.d/luci-app-meownetvpn.json \
+		/etc/meownetvpn/VERSION 2>/dev/null
+	chmod 755 /usr/bin/meownetvpn /etc/meownetvpn/*.sh 2>/dev/null
 	[ "$(uci_get enabled)" = "1" ] || { log "disabled in config"; return 0; }
 	# mesh role awareness (meownetvpn fleet): a NODE routes its internet through the
 	# main router's tunnel over the batman mesh, so it must NOT run its own
