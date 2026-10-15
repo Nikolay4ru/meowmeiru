@@ -576,6 +576,8 @@ case "$1" in
 		uci set $CONF.settings.active_server="$bs"; uci commit $CONF
 		echo "$bs" > "$SEEN"
 		echo "switched: $(srv_get "$bs" label) (${bms}ms $how)"
+		# every switch restarts all tunnels: leave a trace in the event log
+		logger -t meownetvpn "best-server: $(srv_get "$cur" label) -> $(srv_get "$bs" label) (${curms:-?} -> ${bms} ms, $how)"
 		/etc/init.d/meownetvpn restart >/dev/null 2>&1
 		;;
 	auto-best)
