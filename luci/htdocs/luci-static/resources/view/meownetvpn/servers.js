@@ -2,6 +2,7 @@
 'require view';
 'require form';
 'require uci';
+'require ui';
 'require meownetvpn.lib as lib';
 
 return lib.page({
@@ -24,12 +25,14 @@ return lib.page({
       _('Переключаться на следующий сервер, если активный перестаёт пропускать трафик.'));
 
     s=m.section(form.GridSection,'server',_('Серверы'),
-      _('Активный выбирается выше. Пинг обновляется кнопкой ниже и раз в 10 минут.'));
+      _('Активный выбирается выше. «Через сервер» — реальная задержка, проверяется кнопкой «Проверить серверы» ниже.'));
     s.addremove=true; s.anonymous=true; s.sortable=false;
     s.option(form.Value,'label',_('Метка'));
     s.option(form.Value,'address',_('Адрес')).datatype='host';
     s.option(form.Value,'port',_('Порт')).datatype='port';
-    o=s.option(form.DummyValue,'_ping',_('Пинг, мс'));
+    o=s.option(form.DummyValue,'_rt',_('Через сервер, мс'));
+    o.cfgvalue=function(sid){ return self.utCell(sid); };
+    o=s.option(form.DummyValue,'_ping',_('До входа, мс'));
     o.cfgvalue=function(sid){ var ms=self.pingMap[sid]; return (ms&&ms!=='—')?ms:'—'; };
     o=s.option(form.Value,'uuid',_('UUID')); o.modalonly=true;
     o=s.option(form.ListValue,'network',_('Транспорт'));
@@ -65,12 +68,51 @@ return lib.page({
     return m.render().then(function(formNode){
       var out=E('div',{'class':'mk-out'});
 
-      // refresh latency + pick best
-      var serverSection=E('div',{'class':'cbi-section'},[
-        E('h3',{},_('Задержка серверов')),
-        E('div',{'class':'mk-hint'},_('Пинг (мс) показан в колонке «Пинг» выше и в выпадающем списке активного сервера.')),
+      // ---- server cards: what each server is, how fast it really is, one click to
+      // make it active — instead of a dropdown + «Сохранить и применить» far below
+      var act=uci.get('meownetvpn','settings','active_server');
+      var cards=E('div',{'class':'mk-srvs'});
+      self.paintCards=function(){
+        cards.innerHTML='';
+        var list=uci.sections('meownetvpn','server').slice();
+        list.sort(function(a,b){ return (b['.name']===act)-(a['.name']===act); });
+        list.forEach(function(sv){
+          var sid=sv['.name'], on=(sid===act);
+          var a=E('div',{'class':'mk-srv-a'});
+          if(on) a.appendChild(E('span',{'class':'mk-badge ok'},_('● активный')));
+          else a.appendChild(E('button',{'class':'cbi-button cbi-button-action',
+            click: ui.createHandlerFn(self,function(){
+              if(!confirm(_('Переключиться на «%s»? Соединения через VPN оборвутся на несколько секунд.').format(sv.label||sid)))
+                return Promise.resolve();
+              return self.run(['server','use',sid]).then(function(){ return self.run(['restart']); })
+                .then(function(){ location.reload(); });
+            })}, _('Сделать активным')));
+          cards.appendChild(E('div',{'class':'mk-srv'+(on?' active':'')},[
+            E('div',{'class':'mk-srv-h'},[ E('b',{},[sv.label||sid]) ]),
+            E('div',{'class':'mk-srv-m'},[ (self.utMeta.state==='running' && self.utMap[sid]==null)
+              ? E('span',{'class':'mk-pill'},_('через сервер: проверяю…'))
+              : self.latPill(self.utMap[sid],'rt',_('через сервер '),self.utFailed(sid)) ]),
+            E('div',{'class':'mk-srv-m'},[ self.latPill(self.pingMap[sid],'net',_('до входа ')),
+              E('small',{},[(sv.address||'')]) ]),
+            a
+          ]));
+        });
+        if(!cards.children.length) cards.appendChild(E('div',{'class':'mk-hint'},_('Серверов нет — импортируйте подписку ниже.')));
+      };
+      self.paintCards();
+
+      var utState=E('div',{'class':'mk-hint'},self.utText());
+      var serverSection=self.panel(_('Серверы'), null, [
+        utState,
+        cards,
         E('div',{'class':'mk-act'},[
-          self.mkBtn('pingall','cbi-button-action',_('Обновить пинг серверов'), function(){
+          // the real path, one server at a time, with progress: the old ICMP button
+          // finished silently after ~15 s and measured the shared entry, so nobody
+          // could tell whether — or what — it had updated
+          self.mkBtn('urltest','cbi-button-action',_('Проверить серверы'), function(){
+            return self.run(['urltest','start']).then(function(){ return self.pollUrltest(utState); });
+          }),
+          self.mkBtn('pingall','cbi-button',_('Пинг до входа'), function(){
             // repaint in place: location.reload() cost seconds of white screen on A53
             return self.exec(['pingall']).then(function(){
               return self.loadBase().then(function(){ self.colorPings(); return null; });
@@ -85,11 +127,11 @@ return lib.page({
 
       // subscription import
       var subInput=E('input',{type:'text','class':'cbi-input-text',
-        style:'flex:1;min-width:260px',placeholder:'https://…/sub/…?format=clash'});
+        style:'flex:1;min-width:260px',placeholder:'https://…/sub/…',
+        value: uci.get('meownetvpn','settings','sub_url')||''});
       var subOut=E('div',{'class':'mk-out'});
-      var subSection=E('div',{'class':'cbi-section'},[
-        E('h3',{},_('Подписка')),
-        E('div',{'class':'mk-hint'},_('Вставь ссылку на подписку — Clash YAML или список vless://, в том числе в base64. Серверы импортируются, списки обновляются. URL запоминается; авто-обновление включается в «Настройках».')),
+      var subSection=self.panel(_('Подписка'),
+        _('Ссылка на подписку: Clash YAML или список vless:// (в том числе base64). «Импортировать» обновит список серверов; ссылка запоминается, авто-обновление — в «Настройках».'), [
         E('div',{'class':'mk-act'},[
           subInput,
           self.mkBtn('subimport','cbi-button-action',_('Импортировать'), function(){
@@ -126,9 +168,15 @@ return lib.page({
         subOut
       ]);
 
-      var page=E('div',{},[ E('style',{},self.CSS), formNode, serverSection, subSection ]);
+      var page=E('div',{'class':'mk-page'},[ E('style',{},self.CSS), self.brandBar(_('серверы')),
+        serverSection, subSection,
+        E('h3',{style:'margin:18px 2px 6px'},_('Ручная настройка')),
+        E('div',{'class':'mk-hint',style:'margin:0 2px 8px'},_('Выбор активного сервера списком, авто-переключение и правка параметров серверов.')),
+        formNode ]);
       setTimeout(function(){ self.colorPings(); }, 400);
       setTimeout(function(){ self.colorPings(); }, 1500);
+      // a run started elsewhere (another tab, the CLI) is still in progress: follow it
+      if(self.utMeta.state==='running') self.pollUrltest(utState);
       return page;
     });
   }

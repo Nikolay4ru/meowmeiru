@@ -61,7 +61,8 @@ Usage: meownetvpn <command>
   status                     show service + tunnel health
   test                       check tunnel exit IP + a proxied domain
   ping                       latency to server + through the tunnel
-  pingall                    ICMP ping (ms) to every server (pick the best)
+  pingall                    ICMP ping (ms) to every server's ENTRY address
+  urltest [start|status]     real latency THROUGH every server (entry -> exit -> internet)
   speedtest                  measure tunnel throughput (down/up)
   stats                      instantaneous tunnel rx/tx counters + rate
   history                    traffic samples for the dashboard chart
@@ -187,6 +188,7 @@ case "$1" in
 		done
 		if [ -n "$nolist" ]; then emit lists bad "Списки не скачаны:$nolist — этот трафик идёт мимо VPN" "update"
 		elif [ "$old" -gt 14 ]; then emit lists warn "Списки не обновлялись $old дн." "update"
+		elif [ "$old" -eq 0 ]; then emit lists ok "Списки обновлены сегодня"
 		else emit lists ok "Списки обновлялись $old дн. назад"; fi
 		# Strikes are PER-TUNNEL since the watchdog stopped restarting the whole
 		# service for one flaky group: /tmp/meownetvpn.wd/<key>. The single global
@@ -417,6 +419,64 @@ case "$1" in
 		;;
 	pingcache)
 		cat "$STATE_DIR/ping.cache" 2>/dev/null || true ;;
+	urltest)
+		# Real latency THROUGH each server: router -> entry -> exit -> internet, one
+		# HTTPS request, i.e. what a user actually waits for. pingall cannot say this:
+		# it times ICMP to a server's ADDRESS, and most servers share one entry, so its
+		# "Finland 63 ms / Kazakhstan 18 ms" are the same host at different moments.
+		#   urltest          run now and print the table
+		#   urltest start    run in the background (LuCI), return at once
+		#   urltest status   print the last (or still running) result
+		# Cache: "#ts=<epoch>|state=running|done|done=N|total=M", then one line per
+		# server "<section>|<label>|<ms or —>|<note>", republished as each finishes so
+		# the page can show progress instead of a button that looks frozen.
+		UT="$STATE_DIR/urltest.cache"; UTPID="$STATE_DIR/.urltest.pid"
+		case "$2" in
+			status) cat "$UT" 2>/dev/null || true; exit 0 ;;
+			start)
+				if [ -f "$UTPID" ] && kill -0 "$(cat "$UTPID" 2>/dev/null)" 2>/dev/null; then echo "already running"; exit 0; fi
+				( trap '' HUP; exec "$0" urltest run ) </dev/null >/dev/null 2>&1 &
+				echo "started"; exit 0 ;;
+		esac
+		if [ -f "$UTPID" ] && kill -0 "$(cat "$UTPID" 2>/dev/null)" 2>/dev/null; then echo "already running"; exit 0; fi
+		echo $$ > "$UTPID"
+		url=$(uci -q get $CONF.settings.urltest_url); url=${url:-https://cp.cloudflare.com/generate_204}
+		act=$(active_server); list=$(server_list); total=$(echo $list | wc -w); n=0; ts=$(date +%s)
+		body="$STATE_DIR/.urltest.body.$$"; : > "$body"
+		ut_publish() { { echo "#ts=$ts|state=$1|done=$n|total=$total"; cat "$body"; } > "$UT.new.$$" && mv "$UT.new.$$" "$UT"; }
+		ut_publish running
+		# one throw-away Xray at a time: two would cost ~80 MB on a 256 MB router
+		tport=11969; cf="$STATE_DIR/.urltest.xray.json"
+		for s in $list; do
+			lbl=$(srv_get "$s" label); port=""; xp=""; note=""; best=""
+			if [ "$s" = "$act" ] && [ -n "$(pidof xray)" ]; then
+				port=$SOCKS_PORT; note=active        # the live tunnel, as users get it
+			elif /etc/init.d/meownetvpn xrayconf "$cf" "$tport" "$s" 2>/dev/null && [ -s "$cf" ]; then
+				GOMEMLIMIT=20MiB xray run -c "$cf" >/dev/null 2>&1 & xp=$!
+				k=0; while [ $k -lt 30 ] && ! netstat -ltn 2>/dev/null | grep -q "127.0.0.1:$tport "; do
+					sleep 0.1 2>/dev/null || sleep 1; k=$((k+1)); done
+				port=$tport
+			else
+				note="no config"
+			fi
+			if [ -n "$port" ]; then
+				# two fresh requests, the faster counts: the first also pays for the
+				# connection to the entry, which a busy tunnel already has open
+				for try in 1 2; do
+					r=$(curl -s -o /dev/null -m 6 -w '%{http_code} %{time_total}' --socks5-hostname "127.0.0.1:$port" "$url" 2>/dev/null)
+					case "${r%% *}" in 2*|3*)
+						ms=$(awk -v t="${r#* }" 'BEGIN{printf "%d", t*1000}')
+						if [ -z "$best" ] || [ "$ms" -lt "$best" ]; then best=$ms; fi ;;
+					esac
+				done
+				[ -z "$best" ] && note="${note:+$note, }no answer"
+			fi
+			[ -n "$xp" ] && { kill "$xp" 2>/dev/null; wait "$xp" 2>/dev/null; }
+			n=$((n+1)); echo "$s|${lbl:-$s}|${best:-—}|$note" >> "$body"; ut_publish running
+		done
+		ut_publish done; rm -f "$body" "$cf" "$UTPID"
+		[ "$2" = run ] || tail -n +2 "$UT"
+		;;
 	clients)
 		# LAN devices + their connections, and how many are routed through a tunnel
 		# (conntrack mark != 0). Output: ip|host|conns|routed|bytes
@@ -475,15 +535,24 @@ case "$1" in
 		for s in $(server_list); do
 			[ "$(srv_get "$s" failover)" = "0" ] && skip="$skip $s"
 		done
-		best=$(awk -F'|' -v bl="$skip " \
-			'$4 ~ /^[0-9]+$/ && index(bl, " " $1 " ") == 0 {print $4"|"$1}' \
-			"$STATE_DIR/ping.cache" 2>/dev/null | sort -n | head -1)
+		# A finished `urltest` from the last 30 min wins over ICMP: most servers
+		# share one entry host, so ICMP ranks them by the noise of a single ping,
+		# while urltest timed a real request through each one. Its numbers
+		# jitter more (TLS + exit hop), hence the wider margin.
+		src="$STATE_DIR/ping.cache"; col=4; how="до входа"
+		uts=$(sed -n '1s/^#ts=\([0-9]*\)|state=done.*/\1/p' "$STATE_DIR/urltest.cache" 2>/dev/null)
+		if [ -n "$uts" ] && [ $(( now - uts )) -lt 1800 ]; then
+			src="$STATE_DIR/urltest.cache"; col=3; how="через сервер"; HYST_MS=50
+		fi
+		best=$(awk -F'|' -v bl="$skip " -v c="$col" \
+			'$1 !~ /^#/ && $c ~ /^[0-9]+$/ && index(bl, " " $1 " ") == 0 {print $c"|"$1}' \
+			"$src" 2>/dev/null | sort -n | head -1)
 		bs=$(echo "$best" | cut -d'|' -f2); bms=$(echo "$best" | cut -d'|' -f1)
 		[ -n "$bs" ] || { echo "no live server"; exit 1; }
-		if [ "$bs" = "$cur" ]; then echo "already best: $(srv_get "$bs" label) (${bms}ms)"; exit 0; fi
+		if [ "$bs" = "$cur" ]; then echo "already best: $(srv_get "$bs" label) (${bms}ms $how)"; exit 0; fi
 		# hysteresis: three live servers sit within 3 ms of each other, and every
 		# reshuffle of that noise used to cost a restart
-		curms=$(awk -F'|' -v c="$cur" '$1==c && $4 ~ /^[0-9]+$/{print $4; exit}' "$STATE_DIR/ping.cache" 2>/dev/null)
+		curms=$(awk -F'|' -v s="$cur" -v c="$col" '$1==s && $c ~ /^[0-9]+$/{print $c; exit}' "$src" 2>/dev/null)
 		if [ -n "$curms" ] && [ $(( curms - bms )) -lt "$HYST_MS" ]; then
 			echo "оставляем $(srv_get "$cur" label) (${curms}ms): выигрыш $(( curms - bms ))ms меньше порога ${HYST_MS}ms"
 			exit 0
@@ -503,7 +572,7 @@ case "$1" in
 		fi
 		uci set $CONF.settings.active_server="$bs"; uci commit $CONF
 		echo "$bs" > "$SEEN"
-		echo "switched: $(srv_get "$bs" label) (${bms}ms)"
+		echo "switched: $(srv_get "$bs" label) (${bms}ms $how)"
 		/etc/init.d/meownetvpn restart >/dev/null 2>&1
 		;;
 	auto-best)
@@ -546,7 +615,14 @@ case "$1" in
 		chk() { n="$1"; sp="$2"
 			ex=$(curl -fs --socks5-hostname 127.0.0.1:$sp --max-time 10 https://api.ipify.org 2>/dev/null)
 			[ -z "$ex" ] && { echo "$n|—|—|—|—|—"; return; }
-			cc=$(curl -fs --max-time 6 https://ipinfo.io/$ex/country 2>/dev/null | tr -d "\n\r ")
+			# asked THROUGH the tunnel (the answer is about its exit anyway): a
+			# direct lookup is exactly what a filtered uplink drops, and every
+			# country then showed as "?". ip-api.com is the second opinion.
+			cc=$(curl -fs --socks5-hostname 127.0.0.1:$sp --max-time 6 https://ipinfo.io/country 2>/dev/null | tr -d "\n\r ")
+			case "$cc" in [A-Z][A-Z]) ;; *)
+				cc=$(curl -fs --socks5-hostname 127.0.0.1:$sp --max-time 6 'http://ip-api.com/line/?fields=countryCode' 2>/dev/null | tr -d "\n\r ") ;;
+			esac
+			case "$cc" in [A-Z][A-Z]) ;; *) cc="" ;; esac
 			yt=$(curl -fs --socks5-hostname 127.0.0.1:$sp --max-time 12 -o /dev/null -w "%{http_code}" https://www.youtube.com/ 2>/dev/null)
 			tg=$(curl -fs --socks5-hostname 127.0.0.1:$sp --max-time 12 -o /dev/null -w "%{http_code}" https://core.telegram.org/ 2>/dev/null)
 			dc=$(curl -fs --socks5-hostname 127.0.0.1:$sp --max-time 12 -o /dev/null -w "%{http_code}" https://discord.com/ 2>/dev/null)

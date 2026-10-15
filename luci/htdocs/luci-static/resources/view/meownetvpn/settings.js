@@ -27,14 +27,14 @@ return lib.page({
     s=m.section(form.NamedSection,'settings','meownetvpn',_('Автоматизация'));
     s.anonymous=true; s.addremove=false;
     o=s.option(form.Flag,'auto_best',_('Авто-выбор лучшего сервера'),
-      _('Каждые 15 минут измерять пинг и переключаться на самый быстрый сервер.'));
+      _('Каждые 15 минут выбирать самый быстрый сервер по последней проверке «Через сервер» (вкладка «Серверы»); без свежей проверки — по пингу до входа.'));
     // Without sub_url the nightly `meownetvpn sub-refresh` exits on its very first
     // line — no error, no journal entry. The URL was written only by the
     // «Импортировать» button on the Servers page and there was nowhere at all to
     // see it, so the switch below sat ON doing nothing and no one could tell.
     o=s.option(form.Value,'sub_url',_('Ссылка на подписку'),
-      _('Формат clash. Обычно заполняется кнопкой «Импортировать» на вкладке «Серверы»; без неё авто-обновление невозможно.'));
-    o.optional=true; o.placeholder='https://…/sub/…?format=clash';
+      _('Clash YAML или список vless:// (в том числе base64). Обычно заполняется кнопкой «Импортировать» на вкладке «Серверы».'));
+    o.optional=true; o.placeholder='https://…/sub/…';
     o=s.option(form.Flag,'sub_auto',_('Авто-обновление подписки'),
       _('Раз в сутки заново скачивать сохранённую подписку — подтягивает новые серверы и сменившиеся IP.'));
     // only offer the switch once there is something to refresh; retain keeps an
@@ -64,7 +64,7 @@ return lib.page({
       var out=E('div',{'class':'mk-out'});
       self._verEl=E('b',{},'…'); self._upd=E('span',{style:'margin-left:8px'},'');
 
-      var versionSection=E('div',{'class':'cbi-section'},[
+      var versionSection=E('div',{'class':'cbi-section mk-panel'},[
         E('h3',{},_('Версия и обновление')),
         E('div',{'class':'mk-act',style:'align-items:center'},[
           E('span',{},[_('meownetvpn '), self._verEl]),
@@ -94,7 +94,7 @@ return lib.page({
       ]);
 
       self.exec(['version']).then(function(v){ self._verEl.textContent='v'+((v||'').trim()||'?'); });
-      return E('div',{},[ E('style',{},self.CSS), formNode, versionSection ]);
+      return E('div',{'class':'mk-page'},[ E('style',{},self.CSS), self.brandBar(_('настройки')), formNode, versionSection ]);
     });
   }
 });

@@ -10,9 +10,9 @@ return lib.page({
     var self=this;
 
     self._scout=E('div',{style:'margin-top:6px'});
-    var selfcheckSection=E('div',{'class':'cbi-section'},[
+    var selfcheckSection=E('div',{'class':'cbi-section mk-panel'},[
       E('h3',{},_('Проверка обхода')),
-      E('div',{'class':'mk-hint'},_('Внешний IP и страна каждого туннеля + реально ли отвечают YouTube / Telegram / Discord через него.')),
+      E('div',{'class':'mk-hint'},_('Внешний IP и страна каждого туннеля и реально ли через него открываются YouTube, Telegram и Discord.')),
       E('div',{'class':'mk-act'},[
         self.mkBtn('selfchk','cbi-button-action',_('Проверить сейчас'), function(){ return self.runSelfcheck(); })
       ]),
@@ -20,7 +20,7 @@ return lib.page({
     ]);
 
     self._clients=E('div',{style:'margin-top:6px'});
-    var clientsSection=E('div',{'class':'cbi-section'},[
+    var clientsSection=E('div',{'class':'cbi-section mk-panel'},[
       E('h3',{},_('Клиенты')),
       E('div',{'class':'mk-hint'},_('Устройства локальной сети, их активные соединения и сколько из них идёт через туннель.')),
       self._clients,
@@ -33,7 +33,7 @@ return lib.page({
     // wiped on reboot, so "it dropped for ten minutes this morning" was unprovable
     self._events=E('div',{style:'margin-top:6px;max-height:340px;overflow:auto'});
     var repOut=E('div',{'class':'mk-out'});
-    var eventsSection=E('div',{'class':'cbi-section'},[
+    var eventsSection=E('div',{'class':'cbi-section mk-panel'},[
       E('h3',{},_('Журнал событий')),
       E('div',{'class':'mk-hint'},_('Последние события модуля: перезапуски, срабатывания сторожа, обновления списков, ошибки.')),
       self._events,
@@ -49,7 +49,7 @@ return lib.page({
       repOut
     ]);
 
-    var page=E('div',{},[ E('style',{},self.CSS), self.brandBar(_('диагностика')),
+    var page=E('div',{'class':'mk-page'},[ E('style',{},self.CSS), self.brandBar(_('диагностика')),
                           selfcheckSection, clientsSection, eventsSection ]);
 
     // LuCI keys static resources on ITS version, not ours, so right after an

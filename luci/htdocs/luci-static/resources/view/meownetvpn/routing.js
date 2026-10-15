@@ -35,8 +35,8 @@ return lib.page({
     s=m.section(form.NamedSection,'settings','meownetvpn',_('Списки сообщества'));
     s.anonymous=true; s.addremove=false;
     o=s.option(form.MultiValue,'community_lists',_('Сервисы через туннель'),
-      _('Списки itdoginfo/allow-domains. После изменения нажмите «Сохранить и применить», затем обновите списки на вкладке «Обзор».'));
-    o.display_size=16; LISTS.forEach(function(n){ o.value(n,n); }); o.rmempty=true;
+      _('Какие сервисы идут через VPN. Изменения применяются кнопкой «Сохранить и применить» (VPN перезапустится на несколько секунд).'));
+    o.display_size=16; LISTS.forEach(function(n){ o.value(n,self.listName(n)); }); o.rmempty=true;
     o=s.option(form.Value,'routed_dns',_('DNS для маршрутизируемых доменов'),
       _('Реальный DNS для разрешения доменов (идёт через туннель, в обход DPI/fake-IP).'));
     o.datatype='ipaddr'; o.placeholder='8.8.8.8'; o.optional=true;
@@ -57,7 +57,7 @@ return lib.page({
       o.value(sv['.name'], self.srvLabel(sv['.name'], (sv.label||sv['.name'])));
     });
     o=s.option(form.MultiValue,'community_lists',_('Списки')); o.display_size=10;
-    LISTS.forEach(function(n){ o.value(n,n); });
+    LISTS.forEach(function(n){ o.value(n,self.listName(n)); });
 
     s=m.section(form.NamedSection,'user','policy',_('Свои правила'));
     s.anonymous=true; s.addremove=false;
@@ -70,6 +70,8 @@ return lib.page({
     o.validate=validDomain;
     o=s.taboption('excluded',form.DynamicList,'exclude_subnet',_('Подсеть (всегда напрямую)')); o.datatype='cidr4'; o.placeholder='192.168.0.0/16';
 
-    return m.render();
+    return m.render().then(function(node){
+      return E('div',{'class':'mk-page'},[ E('style',{},self.CSS), self.brandBar(_('маршрутизация')), node ]);
+    });
   }
 });
